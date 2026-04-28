@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "debug": false,
+  "readRedaction": {
+    "enabled": false,
+    "includeShellOutput": false
+  }
+}

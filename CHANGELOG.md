@@ -1,0 +1,24 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.0] - 2026-04-26
+
+### Added
+- Added modular TypeScript Pi extension entry point and source structure.
+- Added default sensitive-file protection for environment, credential, private-key, and secret files.
+- Added secret scanning for writes, edits, and Git commit/push diffs.
+- Added optional read-with-redaction behavior for protected reads.
+- Added file-only debug logging under `debug/` gated by user configuration.
+
+### Changed
+- Simplified user-facing runtime configuration to `enabled`, `debug`, and read-redaction controls.
+- Standardized package contents to ship source, docs, license, and `config/config.example.json` while excluding user-local `config.json`.
+
+### Removed
+- Removed duplicate `pi-sensitive-guard.jsonc` runtime configuration source.

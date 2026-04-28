@@ -1,0 +1,75 @@
+{
+  "name": "pi-sensitive-guard",
+  "version": "0.1.0",
+  "description": "Pi extension that protects sensitive files, blocks secret writes, and optionally redacts protected read output.",
+  "type": "module",
+  "main": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "files": [
+    "index.ts",
+    "src",
+    "config/config.example.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "npm run typecheck",
+    "typecheck": "tsc -p tsconfig.json",
+    "test:clean": "node -e \"require('node:fs').rmSync('.test-dist', { recursive: true, force: true })\"",
+    "pretest": "npm run test:clean",
+    "test": "tsc -p tsconfig.test.json && node --test .test-dist/test/*.test.js",
+    "posttest": "npm run test:clean",
+    "check": "npm run build && npm run lint && npm run test",
+    "package:dry-run": "npm pack --dry-run",
+    "prepublishOnly": "npm run check"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "pi-coding-agent",
+    "pi-tui",
+    "coding-agent",
+    "secret-scanning",
+    "sensitive-files",
+    "redaction",
+    "security",
+    "git-protection"
+  ],
+  "author": "MasuRii",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MasuRii/pi-sensitive-guard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MasuRii/pi-sensitive-guard/issues"
+  },
+  "homepage": "https://github.com/MasuRii/pi-sensitive-guard#readme",
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "@aliou/sh": "^0.1.0"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.70.2"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.70.5",
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.3"
+  }
+}
