@@ -2,6 +2,8 @@
 
 [![npm version](https://img.shields.io/npm/v/pi-sensitive-guard?style=flat-square)](https://www.npmjs.com/package/pi-sensitive-guard) [![License](https://img.shields.io/github/license/MasuRii/pi-sensitive-guard?style=flat-square)](LICENSE)
 
+<img width="1389" height="768" alt="image" src="https://github.com/user-attachments/assets/46e73cce-2be9-4669-b0ec-6422b68acc31" />
+
 Sensitive-file protection extension for the [Pi coding agent](https://github.com/mariozechner/pi).
 
 `pi-sensitive-guard` blocks unsafe access to secret-bearing files, scans writes and Git diffs for common credential patterns, and can optionally return redacted protected reads for trusted workflows.
