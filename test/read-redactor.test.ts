@@ -139,3 +139,35 @@ test("normalizes read redaction config with safe defaults and warnings", () => {
 	assert.ok(warnings.some((warning) => warning.includes("readRedaction.includeShellOutput")));
 	assert.ok(warnings.some((warning) => warning.includes("readRedaction.maxBytes")));
 });
+
+test("redacts sensitive JSON container fields before nested credentials leak", () => {
+	const nestedCredential = ["sk", "live", "synthetic", "credential", "000000000000"].join("_");
+	const content = JSON.stringify(
+		{
+			debug: false,
+			providers: {
+				skillsSh: true,
+				skillsMp: true,
+			},
+			maxSearchResults: 20,
+			apiKeys: {
+				github: "placeholder-token",
+				skillsMp: nestedCredential,
+			},
+		},
+		null,
+		2,
+	);
+
+	const result = redactSensitiveReadContent(content, {
+		...DEFAULT_CONFIG.readRedaction,
+		enabled: true,
+	});
+
+	assert.equal(result.redacted, true);
+	assert.equal(result.redactionCount, 1);
+	assert.doesNotThrow(() => JSON.parse(result.content));
+	assert.match(result.content, /"apiKeys": "\[REDACTED\]"/);
+	assert.doesNotMatch(result.content, /skillsMp.*synthetic/s);
+	assert.doesNotMatch(result.content, /placeholder-token/);
+});

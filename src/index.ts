@@ -212,7 +212,7 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 
 			if (isToolCallEventType("read", event)) {
 				const result = matcher.checkReadPath(event.input.path);
-				if (config.readRedaction.enabled) {
+				if (config.readRedaction.enabled && result.blocked) {
 					scheduleReadRedaction(
 						ctx,
 						{
@@ -429,7 +429,11 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 				}
 
 				const readCheck = matcher.checkReadCommand(event.input.command);
-				if (config.readRedaction.enabled && config.readRedaction.includeShellOutput) {
+				if (
+					config.readRedaction.enabled &&
+					config.readRedaction.includeShellOutput &&
+					readCheck.blocked
+				) {
 					scheduleReadRedaction(
 						ctx,
 						{

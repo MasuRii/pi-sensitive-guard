@@ -1,6 +1,10 @@
 {
   "enabled": true,
   "debug": false,
+  "protectedPatterns": [
+    "(^|[\\\\/])my-secret-store\\.json$",
+    "(^|[\\\\/])company-credentials\\.json$"
+  ],
   "readRedaction": {
     "enabled": false,
     "includeShellOutput": false

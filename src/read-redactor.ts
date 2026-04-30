@@ -73,6 +73,80 @@ function redactValuePreservingQuotes(rawValue: string, placeholder: string): str
 	return placeholder;
 }
 
+function isPlaceholderValue(rawValue: string, placeholder: string): boolean {
+	const trimmed = rawValue.trim();
+	if (trimmed === placeholder) {
+		return true;
+	}
+
+	const quote = trimmed[0];
+	return (
+		(quote === '"' || quote === "'") &&
+		trimmed.endsWith(quote) &&
+		trimmed.slice(1, -1) === placeholder
+	);
+}
+
+function shouldAttemptJsonRedaction(content: string): boolean {
+	const trimmed = content.trimStart();
+	return trimmed.startsWith("{") || trimmed.startsWith("[");
+}
+
+function redactJsonValue(
+	value: unknown,
+	placeholder: string,
+	keyPatterns: CompiledKeyPattern[],
+	state: { redactionCount: number },
+): unknown {
+	if (Array.isArray(value)) {
+		return value.map((entry) => redactJsonValue(entry, placeholder, keyPatterns, state));
+	}
+
+	if (!value || typeof value !== "object") {
+		return value;
+	}
+
+	const redactedObject: Record<string, unknown> = {};
+	for (const [key, entry] of Object.entries(value)) {
+		if (isSensitiveKey(key, keyPatterns)) {
+			redactedObject[key] = placeholder;
+			state.redactionCount += 1;
+			continue;
+		}
+
+		redactedObject[key] = redactJsonValue(entry, placeholder, keyPatterns, state);
+	}
+
+	return redactedObject;
+}
+
+function redactJsonStructuredContent(
+	content: string,
+	placeholder: string,
+	keyPatterns: CompiledKeyPattern[],
+): { content: string; redactionCount: number } | null {
+	if (!shouldAttemptJsonRedaction(content)) {
+		return null;
+	}
+
+	try {
+		const parsed: unknown = JSON.parse(content);
+		const state = { redactionCount: 0 };
+		const redacted = redactJsonValue(parsed, placeholder, keyPatterns, state);
+		if (state.redactionCount === 0) {
+			return null;
+		}
+
+		const trailingNewline = content.endsWith("\n") ? "\n" : "";
+		return {
+			content: `${JSON.stringify(redacted, null, 2)}${trailingNewline}`,
+			redactionCount: state.redactionCount,
+		};
+	} catch {
+		return null;
+	}
+}
+
 function redactStructuredLine(
 	line: string,
 	placeholder: string,
@@ -81,7 +155,12 @@ function redactStructuredLine(
 	const jsonMatch = line.match(JSON_KEY_VALUE_PATTERN);
 	if (jsonMatch) {
 		const [, indentation, key, separator, value, suffix] = jsonMatch;
-		if (key && value !== undefined && isSensitiveKey(key, keyPatterns)) {
+		if (
+			key &&
+			value !== undefined &&
+			isSensitiveKey(key, keyPatterns) &&
+			!isPlaceholderValue(value, placeholder)
+		) {
 			return {
 				line: `${indentation}"${key}"${separator}${redactValuePreservingQuotes(value, placeholder)}${suffix}`,
 				redacted: true,
@@ -92,7 +171,12 @@ function redactStructuredLine(
 	const assignmentMatch = line.match(ASSIGNMENT_PATTERN);
 	if (assignmentMatch) {
 		const [, prefix, key, separator, value, suffix] = assignmentMatch;
-		if (key && value !== undefined && isSensitiveKey(key, keyPatterns)) {
+		if (
+			key &&
+			value !== undefined &&
+			isSensitiveKey(key, keyPatterns) &&
+			!isPlaceholderValue(value, placeholder)
+		) {
 			return {
 				line: `${prefix}${key}${separator}${redactValuePreservingQuotes(value, placeholder)}${suffix}`,
 				redacted: true,
@@ -103,7 +187,12 @@ function redactStructuredLine(
 	const yamlMatch = line.match(YAML_KEY_VALUE_PATTERN);
 	if (yamlMatch) {
 		const [, indentation, key, separator, value, suffix] = yamlMatch;
-		if (key && value !== undefined && isSensitiveKey(key, keyPatterns)) {
+		if (
+			key &&
+			value !== undefined &&
+			isSensitiveKey(key, keyPatterns) &&
+			!isPlaceholderValue(value, placeholder)
+		) {
 			return {
 				line: `${indentation}${key}${separator}${redactValuePreservingQuotes(value, placeholder)}${suffix}`,
 				redacted: true,
@@ -180,11 +269,19 @@ function redactKnownSecretPatterns(
 
 	for (const definition of SECRET_PATTERNS) {
 		const pattern = compileGlobalSecretPattern(definition.pattern);
-		redactedContent = redactedContent.replace(pattern, (match) => {
+		redactedContent = redactedContent.replace(pattern, (match, ...args: unknown[]) => {
 			if (match.includes(placeholder)) {
 				return match;
 			}
+
 			redactionCount += 1;
+			if (definition.secretGroup !== undefined) {
+				const capturedSecret = args[definition.secretGroup - 1];
+				if (typeof capturedSecret === "string" && capturedSecret.length > 0) {
+					return match.replace(capturedSecret, placeholder);
+				}
+			}
+
 			return placeholder;
 		});
 	}
@@ -203,7 +300,16 @@ export function redactSensitiveReadContent(
 	}
 
 	const keyPatterns = config.sensitiveKeyPatterns.map(compileKeyPattern);
-	const structured = redactStructuredValues(content, config.placeholder, keyPatterns);
+	const jsonStructured = redactJsonStructuredContent(
+		content,
+		config.placeholder,
+		keyPatterns,
+	);
+	const structured = redactStructuredValues(
+		jsonStructured?.content ?? content,
+		config.placeholder,
+		keyPatterns,
+	);
 	const embedded = redactEmbeddedAssignments(
 		structured.content,
 		config.placeholder,
@@ -213,7 +319,9 @@ export function redactSensitiveReadContent(
 		? redactKnownSecretPatterns(embedded.content, config.placeholder)
 		: { content: embedded.content, redactionCount: 0 };
 	const sensitiveKeyRedactionCount =
-		structured.redactionCount + embedded.redactionCount;
+		(jsonStructured?.redactionCount ?? 0) +
+		structured.redactionCount +
+		embedded.redactionCount;
 	const redactionCount = sensitiveKeyRedactionCount + secretPatternResult.redactionCount;
 	const reasons: string[] = [];
 	if (sensitiveKeyRedactionCount > 0) {

@@ -25,6 +25,7 @@ export const DEFAULT_BLOCKED_EVENTS_LOG_PATH = join(
 );
 
 export const DEFAULT_PROTECTED_PATTERN_CONFIGS: PatternConfig[] = [
+	{ pattern: "(^|[\\\\/])auth\\.json$", regex: true },
 	{ pattern: "(^|[\\\\/])\\.env(?:\\.[^\\\\/]+)?$", regex: true },
 	{ pattern: "(^|[\\\\/])\\.(?:npmrc|pypirc|netrc)$", regex: true },
 	{
@@ -67,9 +68,10 @@ export const DEFAULT_SAFE_PATTERN_CONFIGS: PatternConfig[] = [
 	{ pattern: "\\.pub$", regex: true },
 ];
 
-const STANDARD_SENSITIVE_KEY_NAME_PATTERN = String.raw`(?:api[_-]?key|apikey|secret|client[_-]?secret|app[_-]?secret|password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|auth[_-]?token|bearer|private[_-]?key)`;
+const STANDARD_SENSITIVE_KEY_NAME_PATTERN = String.raw`(?:api[_-]?keys?|apikeys?|client[_-]?secret|app[_-]?secret|password|passwd|pwd|access[_-]?token|refresh[_-]?token|auth[_-]?token|bearer|private[_-]?key)`;
+const DELIMITED_SENSITIVE_KEY_NAME_PATTERN = String.raw`(?:^|[_.-])(?:secret|token)(?:[_.-]|$)`;
 const AUTH_CREDENTIAL_FIELD_NAME_PATTERN = String.raw`(?:key|access|refresh)`;
-const SENSITIVE_ASSIGNMENT_KEY_NAME_PATTERN = String.raw`(?:${STANDARD_SENSITIVE_KEY_NAME_PATTERN}|${AUTH_CREDENTIAL_FIELD_NAME_PATTERN})`;
+const SENSITIVE_ASSIGNMENT_KEY_NAME_PATTERN = String.raw`(?:${STANDARD_SENSITIVE_KEY_NAME_PATTERN}|secret|token|${AUTH_CREDENTIAL_FIELD_NAME_PATTERN})`;
 const GENERIC_SECRET_VALUE_PATTERN = String.raw`[A-Za-z0-9][A-Za-z0-9\-_./+=]{19,}`;
 const QUOTED_OR_BARE_ASSIGNMENT_PREFIX_PATTERN = String.raw`(?:^|[\s{[,;])['\"]?`;
 const QUOTED_OR_BARE_ASSIGNMENT_SEPARATOR_PATTERN = String.raw`['\"]?\s*[=:]\s*['\"]?`;
@@ -83,7 +85,7 @@ function createSensitiveAssignmentPattern(keyNamePattern: string): RegExp {
 
 export const DEFAULT_SENSITIVE_KEY_PATTERN_CONFIGS: PatternConfig[] = [
 	{
-		pattern: String.raw`(?:${STANDARD_SENSITIVE_KEY_NAME_PATTERN}|^${AUTH_CREDENTIAL_FIELD_NAME_PATTERN}$)`,
+		pattern: String.raw`(?:^${STANDARD_SENSITIVE_KEY_NAME_PATTERN}$|${DELIMITED_SENSITIVE_KEY_NAME_PATTERN}|^${AUTH_CREDENTIAL_FIELD_NAME_PATTERN}$)`,
 		regex: true,
 	},
 ];
@@ -215,6 +217,26 @@ export const SECRET_PATTERNS: SecretPatternDefinition[] = [
 	{
 		name: "Anthropic API Key",
 		pattern: /\bsk-ant-[A-Za-z0-9\-_]{20,}\b/,
+		severity: "high",
+	},
+	{
+		name: "Google API Key",
+		pattern: /\bAIza[A-Za-z0-9_-]{35}\b/,
+		severity: "high",
+	},
+	{
+		name: "Slack Token",
+		pattern: /\bxox(?:b-[0-9]{10,13}-[0-9]{10,13}[A-Za-z0-9-]*|[pe](?:-[0-9]{10,13}){3}-[A-Za-z0-9-]{28,34}|a-[0-9]-[A-Z0-9]+-[0-9]+-[a-z0-9]+|r-[A-Za-z0-9-]{10,})\b/i,
+		severity: "high",
+	},
+	{
+		name: "Slack Webhook URL",
+		pattern: /https:\/\/hooks\.slack\.com\/services\/T[A-Za-z0-9_]{8,}\/B[A-Za-z0-9_]{8,}\/[A-Za-z0-9_]{20,}/,
+		severity: "high",
+	},
+	{
+		name: "Stripe API Key",
+		pattern: /\b[rs]k_(?:test|live|prod)_[A-Za-z0-9]{10,99}\b/,
 		severity: "high",
 	},
 	{

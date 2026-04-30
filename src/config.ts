@@ -291,14 +291,14 @@ function normalizeRules(
 		return [
 			{
 				...DEFAULT_CONFIG.rules[0],
-				patterns:
-					legacyProtectedPatterns.length > 0
-						? legacyProtectedPatterns
-						: clonePatternList(DEFAULT_PROTECTED_PATTERN_CONFIGS),
-				allowedPatterns:
-					legacySafePatterns.length > 0
-						? legacySafePatterns
-						: clonePatternList(DEFAULT_SAFE_PATTERN_CONFIGS),
+				patterns: [
+					...clonePatternList(DEFAULT_PROTECTED_PATTERN_CONFIGS),
+					...legacyProtectedPatterns,
+				],
+				allowedPatterns: [
+					...clonePatternList(DEFAULT_SAFE_PATTERN_CONFIGS),
+					...legacySafePatterns,
+				],
 			},
 		];
 	}
