@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-30
+
+### Added
+- Added structured JSON read redaction for sensitive object keys before nested credential values can leak.
+- Added high-severity secret detection for Google API keys, Slack tokens, Slack webhook URLs, and Stripe API keys.
+- Added example custom JSON protected-file patterns to the sample configuration.
+
+### Changed
+- Combined default protected/safe patterns with legacy top-level custom patterns instead of replacing defaults.
+- Limited read-redaction scheduling to blocked protected reads and protected shell-read output.
+- Bumped Pi coding agent development dependency to `^0.70.6`.
+
 ## [0.1.0] - 2026-04-26
 
 ### Added
