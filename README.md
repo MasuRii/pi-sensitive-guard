@@ -12,7 +12,9 @@ Sensitive-file protection extension for the [Pi coding agent](https://github.com
 
 - Protects `.env`, credential, private-key, and secret files from reads, writes, deletes, shell commands, commits, and pushes.
 - Scans write/edit content and Git commit/push diffs for common high-severity secret patterns.
-- Keeps runtime configuration simple with top-level enable/disable, debug logging, and read-redaction controls.
+- Keeps runtime configuration simple with top-level enable/disable, debug logging, read-redaction controls, protected-edit controls, and the `/sensitive-guard` menu.
+- Allows optional non-sensitive edits to protected files when `protectedFileEdits.enabled` is explicitly enabled.
+- Redacts structured JSON values, key/value assignments, embedded assignments, private keys, and known secret patterns while preserving safe output shape.
 - Writes debug output only to the extension-local `debug/` directory when `debug` is enabled.
 - Emits/logs blocked-event metadata after redacting sensitive values.
 
@@ -53,6 +55,15 @@ Typical protected flows include:
 - shell commands that read, write, delete, commit, or push protected secret-bearing files;
 - optional protected reads with redacted output when `readRedaction.enabled` is set to `true`.
 
+### `/sensitive-guard` command
+
+Use `/sensitive-guard` inside Pi to open the interactive configuration menu. The menu can toggle the guard, read redaction, shell-output redaction, blocked-event logging, debug logging, content scanning, protected-file safe edits, and redaction limits without editing JSON by hand.
+
+Additional command forms:
+
+- `/sensitive-guard status` shows the resolved runtime configuration summary.
+- `/sensitive-guard edit` opens the raw `config.json` editor.
+
 After changing configuration, run `/reload` or restart Pi so the guard reloads its rules.
 
 ## Configuration
@@ -72,8 +83,10 @@ Actual global path: $PI_CODING_AGENT_DIR/extensions/pi-sensitive-guard/config.js
 |--------|------|---------|-------------|
 | `enabled` | boolean | `true` | Enable or disable all sensitive-file protection. |
 | `debug` | boolean | `false` | Enable file-only debug logging under `debug/debug.log`. |
-| `readRedaction.enabled` | boolean | `false` | Allow protected `read` tool calls and redact sensitive values before output is returned. |
+| `readRedaction.enabled` | boolean | `false` | Allow redacted read output instead of hard-blocking eligible protected reads. |
 | `readRedaction.includeShellOutput` | boolean | `false` | Also redact shell-command output when protected files are read through shell commands. |
+| `readRedaction.scope` | `protectedOnly` \| `allOutput` | `protectedOnly` | Choose whether redaction applies only to protected read flows or to every read/shell output path covered by the redaction settings. |
+| `protectedFileEdits.enabled` | boolean | `false` | Allow safe non-sensitive write/edit changes to protected files; sensitive key/value, structure, or secret-bearing edits remain blocked. |
 
 ### Example config
 
@@ -83,7 +96,16 @@ Actual global path: $PI_CODING_AGENT_DIR/extensions/pi-sensitive-guard/config.js
   "debug": false,
   "readRedaction": {
     "enabled": false,
-    "includeShellOutput": false
+    "includeShellOutput": false,
+    "scope": "protectedOnly"
+  },
+  "blockedEvents": {
+    "emit": true,
+    "log": true,
+    "logPath": "logs/blocked-events.jsonl"
+  },
+  "protectedFileEdits": {
+    "enabled": false
   }
 }
 ```
