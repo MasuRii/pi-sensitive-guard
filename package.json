@@ -1,6 +1,6 @@
 {
   "name": "pi-sensitive-guard",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pi extension that protects sensitive files, blocks secret writes, and optionally redacts protected read output.",
   "type": "module",
   "main": "./index.ts",

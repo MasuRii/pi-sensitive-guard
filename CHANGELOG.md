@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-04
+
+### Added
+- Added `/sensitive-guard` runtime configuration command with status, raw edit, and interactive menu flows.
+- Added configurable `readRedaction.scope` controls for protected-only versus all-output redaction coverage.
+- Added `protectedFileEdits.enabled` controls for explicitly allowing safe non-sensitive protected-file edits.
+
+### Changed
+- Expanded read redaction to cover structured JSON, key/value assignments, embedded assignments, private-key blocks, and detected secret patterns while avoiding common non-secret code references.
+- Documented the revised redaction and protected-edit behavior in the README and sample configuration.
+
 ## [0.2.0] - 2026-04-30
 
 ### Added
