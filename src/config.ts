@@ -18,7 +18,9 @@ import type {
 	GitProtectionConfig,
 	PatternConfig,
 	ProtectionLevel,
+	ProtectedFileEditsConfig,
 	ReadRedactionConfig,
+	ReadRedactionScope,
 	ResolvedProtectionRule,
 	ResolvedSensitiveGuardConfig,
 	SensitiveGuardConfig,
@@ -55,6 +57,7 @@ function cloneDefaultConfig(): ResolvedSensitiveGuardConfig {
 				DEFAULT_CONFIG.readRedaction.sensitiveKeyPatterns,
 			),
 		},
+		protectedFileEdits: { ...DEFAULT_CONFIG.protectedFileEdits },
 		debug: DEFAULT_CONFIG.debug,
 	};
 }
@@ -160,6 +163,26 @@ function normalizeSeverity(
 
 	warnings.push(
 		`Invalid config value '${path}': expected one of 'critical', 'high', or 'medium'.`,
+	);
+	return fallback;
+}
+
+function normalizeReadRedactionScope(
+	value: unknown,
+	fallback: ReadRedactionScope,
+	path: string,
+	warnings: string[],
+): ReadRedactionScope {
+	if (value === undefined) {
+		return fallback;
+	}
+
+	if (value === "protectedOnly" || value === "allOutput") {
+		return value;
+	}
+
+	warnings.push(
+		`Invalid config value '${path}': expected one of 'protectedOnly' or 'allOutput'.`,
 	);
 	return fallback;
 }
@@ -435,6 +458,12 @@ function normalizeReadRedaction(
 			"readRedaction.includeShellOutput",
 			warnings,
 		),
+		scope: normalizeReadRedactionScope(
+			record.scope,
+			DEFAULT_CONFIG.readRedaction.scope,
+			"readRedaction.scope",
+			warnings,
+		),
 		placeholder: configuredPlaceholder ?? DEFAULT_CONFIG.readRedaction.placeholder,
 		maxBytes: normalizePositiveInteger(
 			record.maxBytes,
@@ -450,6 +479,21 @@ function normalizeReadRedaction(
 			record.redactSecretPatterns,
 			DEFAULT_CONFIG.readRedaction.redactSecretPatterns,
 			"readRedaction.redactSecretPatterns",
+			warnings,
+		),
+	};
+}
+
+function normalizeProtectedFileEdits(
+	value: unknown,
+	warnings: string[],
+): ResolvedSensitiveGuardConfig["protectedFileEdits"] {
+	const record = toObject(value) as ProtectedFileEditsConfig;
+	return {
+		enabled: normalizeBoolean(
+			record.enabled,
+			DEFAULT_CONFIG.protectedFileEdits.enabled,
+			"protectedFileEdits.enabled",
 			warnings,
 		),
 	};
@@ -499,6 +543,10 @@ export function normalizeSensitiveGuardConfig(raw: unknown): {
 		contentScanning: normalizeContentScanning(source.contentScanning, warnings),
 		blockedEvents: normalizeBlockedEvents(source.blockedEvents, warnings),
 		readRedaction: normalizeReadRedaction(source.readRedaction, warnings),
+		protectedFileEdits: normalizeProtectedFileEdits(
+			source.protectedFileEdits,
+			warnings,
+		),
 		debug: normalizeBoolean(source.debug, DEFAULT_CONFIG.debug, "debug", warnings),
 	};
 

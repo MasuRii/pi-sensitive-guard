@@ -7,6 +7,15 @@
   ],
   "readRedaction": {
     "enabled": false,
-    "includeShellOutput": false
+    "includeShellOutput": false,
+    "scope": "protectedOnly"
+  },
+  "blockedEvents": {
+    "emit": true,
+    "log": true,
+    "logPath": "logs/blocked-events.jsonl"
+  },
+  "protectedFileEdits": {
+    "enabled": false
   }
 }

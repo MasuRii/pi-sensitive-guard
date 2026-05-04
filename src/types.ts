@@ -1,5 +1,6 @@
 export type ConfigSource = "primary" | "fallback";
 export type ProtectionLevel = "none" | "readOnly" | "noAccess";
+export type ReadRedactionScope = "protectedOnly" | "allOutput";
 export type BlockKind = "read" | "write" | "delete";
 export type GuardFeature =
 	| "pathProtection"
@@ -49,10 +50,15 @@ export interface BlockedEventsConfig {
 export interface ReadRedactionConfig {
 	enabled?: boolean;
 	includeShellOutput?: boolean;
+	scope?: ReadRedactionScope;
 	placeholder?: string;
 	maxBytes?: number;
 	sensitiveKeyPatterns?: PatternConfig[];
 	redactSecretPatterns?: boolean;
+}
+
+export interface ProtectedFileEditsConfig {
+	enabled?: boolean;
 }
 
 export interface SensitiveGuardConfig {
@@ -65,6 +71,7 @@ export interface SensitiveGuardConfig {
 	contentScanning?: ContentScanningConfig;
 	blockedEvents?: BlockedEventsConfig;
 	readRedaction?: ReadRedactionConfig;
+	protectedFileEdits?: ProtectedFileEditsConfig;
 	debug?: boolean;
 }
 
@@ -103,10 +110,14 @@ export interface ResolvedSensitiveGuardConfig {
 	readRedaction: {
 		enabled: boolean;
 		includeShellOutput: boolean;
+		scope: ReadRedactionScope;
 		placeholder: string;
 		maxBytes: number;
 		sensitiveKeyPatterns: PatternConfig[];
 		redactSecretPatterns: boolean;
+	};
+	protectedFileEdits: {
+		enabled: boolean;
 	};
 	debug: boolean;
 }

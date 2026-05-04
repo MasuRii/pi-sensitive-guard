@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
+
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -5,6 +8,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 
 import { ensureConfigExists, loadConfig } from "./config.js";
+import { registerSensitiveGuardConfigCommand } from "./config-command.js";
 import { SensitiveGuardDebugLogger } from "./debug-logger.js";
 import { emitBlocked } from "./events.js";
 import { checkGitProtection } from "./git-protection.js";
@@ -20,6 +24,10 @@ import {
 	READ_SECURITY_MESSAGE,
 	WRITE_SECURITY_MESSAGE,
 } from "./messages.js";
+import {
+	evaluateProtectedFileEdits,
+	evaluateProtectedFileWrite,
+} from "./protected-file-edits.js";
 import { redactSensitiveReadContent } from "./read-redactor.js";
 import {
 	formatSecretFindings,
@@ -57,6 +65,10 @@ function getCommandBlockMessage(result: CommandCheckResult): string {
 
 function getEditReplacementContent(edits: ReadonlyArray<{ newText: string }>): string {
 	return edits.map((edit) => edit.newText).join("\n");
+}
+
+function resolveToolPath(cwd: string, path: string): string {
+	return isAbsolute(path) ? path : resolve(cwd, path);
 }
 
 function createBlockedEvent(
@@ -174,6 +186,15 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 		writeDebug(ctx, "info", debugEvent, debugPayload);
 	};
 
+	const shouldRedactReadPath = (blocked: boolean): boolean =>
+		config.readRedaction.enabled &&
+		(blocked || config.readRedaction.scope === "allOutput");
+
+	const shouldRedactShellOutput = (blocked: boolean): boolean =>
+		config.readRedaction.enabled &&
+		config.readRedaction.includeShellOutput &&
+		(blocked || config.readRedaction.scope === "allOutput");
+
 	const refreshConfig = (ctx: ExtensionContext): void => {
 		const ensureResult = ensureConfigExists();
 		if (ensureResult.error) {
@@ -185,7 +206,6 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 			warnOnce(ctx, `${EXTENSION_NAME}: ${warning}`);
 		}
 
-
 		config = loaded.config;
 		matcher = createSensitiveGuardMatcher(config);
 		debugLogger.setEnabled(config.debug);
@@ -195,9 +215,16 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 			path: loaded.path,
 			enabled: config.enabled,
 			readRedactionEnabled: config.readRedaction.enabled,
+			readRedactionScope: config.readRedaction.scope,
 			includeShellOutput: config.readRedaction.includeShellOutput,
+			blockedEventLog: config.blockedEvents.log,
 		});
 	};
+
+	registerSensitiveGuardConfigCommand(pi, {
+		getConfig: () => config,
+		refreshConfig,
+	});
 
 	// Load config on startup and refresh on /reload.
 	pi.on("session_start", async (_event, ctx) => {
@@ -212,7 +239,7 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 
 			if (isToolCallEventType("read", event)) {
 				const result = matcher.checkReadPath(event.input.path);
-				if (config.readRedaction.enabled && result.blocked) {
+				if (shouldRedactReadPath(result.blocked)) {
 					scheduleReadRedaction(
 						ctx,
 						{
@@ -222,7 +249,7 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 							ruleId: result.ruleId,
 							source: "read",
 						},
-						"read_redaction_scheduled",
+						result.blocked ? "read_redaction_scheduled" : "read_output_redaction_scheduled",
 						{
 							toolCallId: event.toolCallId,
 							target: result.target ?? event.input.path,
@@ -255,24 +282,54 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 
 			if (isToolCallEventType("write", event)) {
 				const pathResult = matcher.checkWritePath(event.input.path);
+				let protectedWriteBypass = false;
 				if (pathResult.blocked) {
-					notify(ctx, getPathBlockMessage("write", pathResult.target ?? event.input.path), "error");
-					reportBlockedEvent(
-						ctx,
-						createBlockedEvent(
-							"pathProtection",
-							"write",
-							pathResult.reason,
-							event.toolName,
-							pathResult.target,
-							pathResult.ruleId,
-							{ path: event.input.path },
-						),
-					);
-					return { block: true, reason: WRITE_SECURITY_MESSAGE };
+					let blockReason = pathResult.reason;
+					if (config.protectedFileEdits.enabled) {
+						try {
+							const currentContent = readFileSync(
+								resolveToolPath(ctx.cwd, event.input.path),
+								"utf-8",
+							);
+							const evaluation = evaluateProtectedFileWrite(
+								currentContent,
+								event.input.content,
+								config,
+							);
+							if (evaluation.allowed) {
+								protectedWriteBypass = true;
+								writeDebug(ctx, "info", "protected_file_write_allowed", {
+									path: event.input.path,
+									ruleId: pathResult.ruleId,
+								});
+							} else {
+								blockReason = evaluation.reason;
+							}
+						} catch (error) {
+							const message = error instanceof Error ? error.message : String(error);
+							blockReason = `Protected file write could not be validated safely: ${message}`;
+						}
+					}
+
+					if (!protectedWriteBypass) {
+						notify(ctx, getPathBlockMessage("write", pathResult.target ?? event.input.path), "error");
+						reportBlockedEvent(
+							ctx,
+							createBlockedEvent(
+								"pathProtection",
+								"write",
+								blockReason,
+								event.toolName,
+								pathResult.target,
+								pathResult.ruleId,
+								{ path: event.input.path },
+							),
+						);
+						return { block: true, reason: WRITE_SECURITY_MESSAGE };
+					}
 				}
 
-				if (config.contentScanning.enabled) {
+				if (config.contentScanning.enabled && !protectedWriteBypass) {
 					const findings = getBlockableSecretFindings(
 						scanContentForSecrets(
 							event.input.content,
@@ -308,20 +365,30 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 			if (isToolCallEventType("edit", event)) {
 				const pathResult = matcher.checkWritePath(event.input.path);
 				if (pathResult.blocked) {
-					notify(ctx, getPathBlockMessage("write", pathResult.target ?? event.input.path), "error");
-					reportBlockedEvent(
-						ctx,
-						createBlockedEvent(
-							"pathProtection",
-							"write",
-							pathResult.reason,
-							event.toolName,
-							pathResult.target,
-							pathResult.ruleId,
-							{ path: event.input.path },
-						),
-					);
-					return { block: true, reason: WRITE_SECURITY_MESSAGE };
+					const evaluation = config.protectedFileEdits.enabled
+						? evaluateProtectedFileEdits(event.input.edits, config)
+						: { allowed: false, reason: pathResult.reason };
+					if (!evaluation.allowed) {
+						notify(ctx, getPathBlockMessage("write", pathResult.target ?? event.input.path), "error");
+						reportBlockedEvent(
+							ctx,
+							createBlockedEvent(
+								"pathProtection",
+								"write",
+								evaluation.reason,
+								event.toolName,
+								pathResult.target,
+								pathResult.ruleId,
+								{ path: event.input.path },
+							),
+						);
+						return { block: true, reason: WRITE_SECURITY_MESSAGE };
+					}
+
+					writeDebug(ctx, "info", "protected_file_edit_allowed", {
+						path: event.input.path,
+						ruleId: pathResult.ruleId,
+					});
 				}
 
 				if (config.contentScanning.enabled) {
@@ -429,11 +496,7 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 				}
 
 				const readCheck = matcher.checkReadCommand(event.input.command);
-				if (
-					config.readRedaction.enabled &&
-					config.readRedaction.includeShellOutput &&
-					readCheck.blocked
-				) {
+				if (shouldRedactShellOutput(readCheck.blocked)) {
 					scheduleReadRedaction(
 						ctx,
 						{
@@ -443,7 +506,7 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 							ruleId: readCheck.ruleId,
 							source: "shell",
 						},
-						"shell_read_redaction_scheduled",
+						readCheck.blocked ? "shell_read_redaction_scheduled" : "shell_output_redaction_scheduled",
 						{
 							toolCallId: event.toolCallId,
 							target: readCheck.target,
@@ -532,17 +595,20 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 			}
 
 			const redactionReasons = [...reasons];
+			const outputKind = pending.ruleId ? "protected output" : "tool output";
 			reportBlockedEvent(
 				ctx,
 				createBlockedEvent(
 					"readRedaction",
 					"read",
-					`Redacted ${redactionCount} sensitive value(s) from protected read output.`,
+					`Redacted ${redactionCount} sensitive value(s) from ${outputKind}.`,
 					pending.toolName,
 					pending.target,
 					pending.ruleId,
 					{
 						source: pending.source,
+						redactionScope: config.readRedaction.scope,
+						pathProtected: Boolean(pending.ruleId),
 						redactionCount,
 						reasons: redactionReasons,
 					},

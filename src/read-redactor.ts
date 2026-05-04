@@ -15,6 +15,23 @@ const JSON_KEY_VALUE_PATTERN = /^(\s*)"([^"]+)"(\s*:\s*)(.*?)(\s*,?\s*)$/;
 const ASSIGNMENT_PATTERN = /^(\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_.-]*)(\s*[=:]\s*)(.*?)(\s*)$/;
 const YAML_KEY_VALUE_PATTERN = /^(\s*)([A-Za-z_][A-Za-z0-9_.-]*)(\s*:\s+)(.*?)(\s*)$/;
 const EMBEDDED_ASSIGNMENT_PATTERN = /(["']?)(\b[A-Za-z_][A-Za-z0-9_.-]*\b)\1(\s*[=:]\s*)(["']?)([^"'\s,;{}]+)(["']?)/g;
+const CODE_REFERENCE_VALUE_PATTERN = /^(?:process\.env\.|import\.meta\.env\.)?[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/;
+const STANDALONE_AUTH_CREDENTIAL_KEYS = new Set(["key", "access", "refresh"]);
+const NON_SECRET_STANDALONE_VALUES = new Set([
+	"boolean",
+	"false",
+	"null",
+	"number",
+	"object",
+	"private",
+	"protected",
+	"public",
+	"string",
+	"true",
+	"undefined",
+	"unknown",
+	"void",
+]);
 
 function compileRegex(pattern: string, flags: string): RegExp {
 	try {
@@ -87,6 +104,100 @@ function isPlaceholderValue(rawValue: string, placeholder: string): boolean {
 	);
 }
 
+function stripValueSyntax(rawValue: string): string {
+	let value = rawValue.trim().replace(/[;,]+$/g, "").trim();
+	const quote = value[0];
+	if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
+		value = value.slice(1, -1).trim();
+	}
+	return value;
+}
+
+function isStandaloneAuthCredentialKey(key: string): boolean {
+	return STANDALONE_AUTH_CREDENTIAL_KEYS.has(key.trim().toLowerCase());
+}
+
+function isCodeReferenceValue(value: string): boolean {
+	return CODE_REFERENCE_VALUE_PATTERN.test(value);
+}
+
+function matchesKnownSecretValue(value: string): boolean {
+	PRIVATE_KEY_BLOCK_PATTERN.lastIndex = 0;
+	if (PRIVATE_KEY_BLOCK_PATTERN.test(value)) {
+		PRIVATE_KEY_BLOCK_PATTERN.lastIndex = 0;
+		return true;
+	}
+
+	for (const definition of SECRET_PATTERNS) {
+		definition.pattern.lastIndex = 0;
+		if (definition.pattern.test(value)) {
+			definition.pattern.lastIndex = 0;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+function isLikelySensitiveStandaloneValue(rawValue: string): boolean {
+	const value = stripValueSyntax(rawValue);
+	if (!value || NON_SECRET_STANDALONE_VALUES.has(value.toLowerCase())) {
+		return false;
+	}
+
+	if (isCodeReferenceValue(value)) {
+		return false;
+	}
+
+	if (matchesKnownSecretValue(value)) {
+		return true;
+	}
+
+	if (value.length >= 20 && /[-_./+=]/.test(value) && /[A-Za-z0-9]/.test(value)) {
+		return true;
+	}
+
+	return value.length >= 32 && /[A-Za-z]/.test(value) && /\d/.test(value);
+}
+
+function shouldRedactSensitiveKeyValue(
+	key: string,
+	rawValue: string,
+	placeholder: string,
+	keyPatterns: CompiledKeyPattern[],
+): boolean {
+	if (!isSensitiveKey(key, keyPatterns) || isPlaceholderValue(rawValue, placeholder)) {
+		return false;
+	}
+
+	if (isStandaloneAuthCredentialKey(key)) {
+		return isLikelySensitiveStandaloneValue(rawValue);
+	}
+
+	return true;
+}
+
+function shouldRedactJsonSensitiveKeyValue(
+	key: string,
+	value: unknown,
+	placeholder: string,
+	keyPatterns: CompiledKeyPattern[],
+): boolean {
+	if (!isSensitiveKey(key, keyPatterns)) {
+		return false;
+	}
+
+	if (typeof value === "string" && isPlaceholderValue(value, placeholder)) {
+		return false;
+	}
+
+	if (isStandaloneAuthCredentialKey(key)) {
+		return typeof value === "string" && isLikelySensitiveStandaloneValue(value);
+	}
+
+	return true;
+}
+
 function shouldAttemptJsonRedaction(content: string): boolean {
 	const trimmed = content.trimStart();
 	return trimmed.startsWith("{") || trimmed.startsWith("[");
@@ -108,7 +219,7 @@ function redactJsonValue(
 
 	const redactedObject: Record<string, unknown> = {};
 	for (const [key, entry] of Object.entries(value)) {
-		if (isSensitiveKey(key, keyPatterns)) {
+		if (shouldRedactJsonSensitiveKeyValue(key, entry, placeholder, keyPatterns)) {
 			redactedObject[key] = placeholder;
 			state.redactionCount += 1;
 			continue;
@@ -158,8 +269,7 @@ function redactStructuredLine(
 		if (
 			key &&
 			value !== undefined &&
-			isSensitiveKey(key, keyPatterns) &&
-			!isPlaceholderValue(value, placeholder)
+			shouldRedactSensitiveKeyValue(key, value, placeholder, keyPatterns)
 		) {
 			return {
 				line: `${indentation}"${key}"${separator}${redactValuePreservingQuotes(value, placeholder)}${suffix}`,
@@ -174,8 +284,7 @@ function redactStructuredLine(
 		if (
 			key &&
 			value !== undefined &&
-			isSensitiveKey(key, keyPatterns) &&
-			!isPlaceholderValue(value, placeholder)
+			shouldRedactSensitiveKeyValue(key, value, placeholder, keyPatterns)
 		) {
 			return {
 				line: `${prefix}${key}${separator}${redactValuePreservingQuotes(value, placeholder)}${suffix}`,
@@ -190,8 +299,7 @@ function redactStructuredLine(
 		if (
 			key &&
 			value !== undefined &&
-			isSensitiveKey(key, keyPatterns) &&
-			!isPlaceholderValue(value, placeholder)
+			shouldRedactSensitiveKeyValue(key, value, placeholder, keyPatterns)
 		) {
 			return {
 				line: `${indentation}${key}${separator}${redactValuePreservingQuotes(value, placeholder)}${suffix}`,
@@ -242,7 +350,10 @@ function redactEmbeddedAssignments(
 			value: string,
 			closingValueQuote: string,
 		) => {
-			if (!value || value === placeholder || !isSensitiveKey(key, keyPatterns)) {
+			if (
+				!value ||
+				!shouldRedactSensitiveKeyValue(key, value, placeholder, keyPatterns)
+			) {
 				return match;
 			}
 

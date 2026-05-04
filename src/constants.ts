@@ -27,6 +27,7 @@ export const DEFAULT_BLOCKED_EVENTS_LOG_PATH = join(
 export const DEFAULT_PROTECTED_PATTERN_CONFIGS: PatternConfig[] = [
 	{ pattern: "(^|[\\\\/])auth\\.json$", regex: true },
 	{ pattern: "(^|[\\\\/])\\.env(?:\\.[^\\\\/]+)?$", regex: true },
+	{ pattern: "(^|[\\\\/])[^\\\\/]+\\.env$", regex: true },
 	{ pattern: "(^|[\\\\/])\\.(?:npmrc|pypirc|netrc)$", regex: true },
 	{
 		pattern: "(^|[\\\\/])(?:id_rsa|id_dsa|id_ecdsa|id_ed25519)$",
@@ -68,8 +69,9 @@ export const DEFAULT_SAFE_PATTERN_CONFIGS: PatternConfig[] = [
 	{ pattern: "\\.pub$", regex: true },
 ];
 
-const STANDARD_SENSITIVE_KEY_NAME_PATTERN = String.raw`(?:api[_-]?keys?|apikeys?|client[_-]?secret|app[_-]?secret|password|passwd|pwd|access[_-]?token|refresh[_-]?token|auth[_-]?token|bearer|private[_-]?key)`;
-const DELIMITED_SENSITIVE_KEY_NAME_PATTERN = String.raw`(?:^|[_.-])(?:secret|token)(?:[_.-]|$)`;
+const API_KEY_NAME_PATTERN = String.raw`(?:api[_-]?keys?|apikeys?)(?:[_-]?\d+)?`;
+const STANDARD_SENSITIVE_KEY_NAME_PATTERN = String.raw`(?:${API_KEY_NAME_PATTERN}|client[_-]?secret|app[_-]?secret|password|passwd|pwd|access[_-]?token|refresh[_-]?token|auth[_-]?token|bearer|private[_-]?key)`;
+const DELIMITED_SENSITIVE_KEY_NAME_PATTERN = String.raw`(?:^|[_.-])(?:secret|token|${API_KEY_NAME_PATTERN})(?:[_.-]|$)`;
 const AUTH_CREDENTIAL_FIELD_NAME_PATTERN = String.raw`(?:key|access|refresh)`;
 const SENSITIVE_ASSIGNMENT_KEY_NAME_PATTERN = String.raw`(?:${STANDARD_SENSITIVE_KEY_NAME_PATTERN}|secret|token|${AUTH_CREDENTIAL_FIELD_NAME_PATTERN})`;
 const GENERIC_SECRET_VALUE_PATTERN = String.raw`[A-Za-z0-9][A-Za-z0-9\-_./+=]{19,}`;
@@ -128,10 +130,14 @@ export const DEFAULT_CONFIG: ResolvedSensitiveGuardConfig = {
 	readRedaction: {
 		enabled: false,
 		includeShellOutput: false,
+		scope: "protectedOnly",
 		placeholder: DEFAULT_REDACTION_PLACEHOLDER,
 		maxBytes: 262144,
 		sensitiveKeyPatterns: [...DEFAULT_SENSITIVE_KEY_PATTERN_CONFIGS],
 		redactSecretPatterns: true,
+	},
+	protectedFileEdits: {
+		enabled: false,
 	},
 	debug: false,
 };
@@ -143,6 +149,15 @@ export const DEFAULT_CONFIG_CONTENT = `${JSON.stringify(
 		readRedaction: {
 			enabled: DEFAULT_CONFIG.readRedaction.enabled,
 			includeShellOutput: DEFAULT_CONFIG.readRedaction.includeShellOutput,
+			scope: DEFAULT_CONFIG.readRedaction.scope,
+		},
+		blockedEvents: {
+			emit: DEFAULT_CONFIG.blockedEvents.emit,
+			log: DEFAULT_CONFIG.blockedEvents.log,
+			logPath: "logs/blocked-events.jsonl",
+		},
+		protectedFileEdits: {
+			enabled: DEFAULT_CONFIG.protectedFileEdits.enabled,
 		},
 	},
 	null,

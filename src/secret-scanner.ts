@@ -6,6 +6,29 @@ const SEVERITY_ORDER: Record<SecretSeverity, number> = {
 	high: 2,
 	critical: 3,
 };
+const ASSIGNMENT_FINDING_NAMES = new Set([
+	"API Key Assignment",
+	"Secret Assignment",
+	"Password Assignment",
+	"Token Assignment",
+	"Sensitive Credential Assignment",
+]);
+const CODE_REFERENCE_VALUE_PATTERN = /^(?:process\.env\.|import\.meta\.env\.)?[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/;
+const NON_SECRET_ASSIGNMENT_VALUES = new Set([
+	"boolean",
+	"false",
+	"null",
+	"number",
+	"object",
+	"private",
+	"protected",
+	"public",
+	"string",
+	"true",
+	"undefined",
+	"unknown",
+	"void",
+]);
 
 function sanitizeSnippet(snippet: string): string {
 	return snippet.replace(/\s+/g, " ").trim().slice(0, 160);
@@ -47,6 +70,32 @@ function createFinding(
 	};
 }
 
+function stripAssignmentValueSyntax(matchText: string): string {
+	let value = matchText.trim().replace(/[;,]+$/g, "").trim();
+	const quote = value[0];
+	if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
+		value = value.slice(1, -1).trim();
+	}
+	return value;
+}
+
+function isCodeReferenceValue(matchText: string): boolean {
+	return CODE_REFERENCE_VALUE_PATTERN.test(stripAssignmentValueSyntax(matchText));
+}
+
+function shouldIgnoreAssignmentFinding(name: string, matchText: string): boolean {
+	if (!ASSIGNMENT_FINDING_NAMES.has(name)) {
+		return false;
+	}
+
+	const value = stripAssignmentValueSyntax(matchText);
+	return (
+		!value ||
+		NON_SECRET_ASSIGNMENT_VALUES.has(value.toLowerCase()) ||
+		isCodeReferenceValue(value)
+	);
+}
+
 export function severityAtOrAbove(
 	severity: SecretSeverity,
 	threshold: SecretSeverity,
@@ -73,10 +122,15 @@ export function scanContentForSecrets(
 				continue;
 			}
 
+			const matchText = selectSecretMatchText(match, pattern.secretGroup);
+			if (shouldIgnoreAssignmentFinding(pattern.name, matchText)) {
+				continue;
+			}
+
 			findings.push(
 				createFinding(
 					line,
-					selectSecretMatchText(match, pattern.secretGroup),
+					matchText,
 					pattern.name,
 					pattern.severity,
 					index + 1,
@@ -123,10 +177,15 @@ export function scanDiffForSecrets(
 				continue;
 			}
 
+			const matchText = selectSecretMatchText(match, pattern.secretGroup);
+			if (shouldIgnoreAssignmentFinding(pattern.name, matchText)) {
+				continue;
+			}
+
 			findings.push(
 				createFinding(
 					content,
-					selectSecretMatchText(match, pattern.secretGroup),
+					matchText,
 					pattern.name,
 					pattern.severity,
 					index + 1,
