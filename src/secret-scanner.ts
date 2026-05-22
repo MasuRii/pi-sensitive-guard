@@ -14,6 +14,9 @@ const ASSIGNMENT_FINDING_NAMES = new Set([
 	"Sensitive Credential Assignment",
 ]);
 const CODE_REFERENCE_VALUE_PATTERN = /^(?:process\.env\.|import\.meta\.env\.)?[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/;
+const TEST_FIXTURE_PATH_PATTERN = /(?:^|[\\/._-])(?:__tests__|tests?|specs?|fixtures?|mocks?|samples?|examples?)(?:[\\/._-]|$)/i;
+const PLACEHOLDER_SECRET_WORD_PATTERN = /(?:^|[-_.])(?:test|fake|mock|dummy|fixture|sample|example|synthetic|placeholder|stale)(?:[-_.]|$)/i;
+const HUMAN_READABLE_FIXTURE_VALUE_PATTERN = /^[a-z0-9]+(?:[-_.][a-z0-9]+)+$/;
 const NON_SECRET_ASSIGNMENT_VALUES = new Set([
 	"boolean",
 	"false",
@@ -29,6 +32,10 @@ const NON_SECRET_ASSIGNMENT_VALUES = new Set([
 	"unknown",
 	"void",
 ]);
+
+export interface SecretScanOptions {
+	file?: string;
+}
 
 function sanitizeSnippet(snippet: string): string {
 	return snippet.replace(/\s+/g, " ").trim().slice(0, 160);
@@ -83,7 +90,33 @@ function isCodeReferenceValue(matchText: string): boolean {
 	return CODE_REFERENCE_VALUE_PATTERN.test(stripAssignmentValueSyntax(matchText));
 }
 
-function shouldIgnoreAssignmentFinding(name: string, matchText: string): boolean {
+function isTestFixturePath(file: string | undefined): boolean {
+	return typeof file === "string" && TEST_FIXTURE_PATH_PATTERN.test(file);
+}
+
+function isHumanReadableFixtureValue(value: string): boolean {
+	if (!HUMAN_READABLE_FIXTURE_VALUE_PATTERN.test(value)) {
+		return false;
+	}
+
+	return value
+		.split(/[-_.]/g)
+		.every((segment) => segment.length > 0 && segment.length <= 16 && !/^\d{6,}$/.test(segment));
+}
+
+function isFixtureAssignmentValue(value: string, file: string | undefined): boolean {
+	if (!isTestFixturePath(file)) {
+		return false;
+	}
+
+	return PLACEHOLDER_SECRET_WORD_PATTERN.test(value) || isHumanReadableFixtureValue(value);
+}
+
+function shouldIgnoreAssignmentFinding(
+	name: string,
+	matchText: string,
+	options: SecretScanOptions = {},
+): boolean {
 	if (!ASSIGNMENT_FINDING_NAMES.has(name)) {
 		return false;
 	}
@@ -92,7 +125,8 @@ function shouldIgnoreAssignmentFinding(name: string, matchText: string): boolean
 	return (
 		!value ||
 		NON_SECRET_ASSIGNMENT_VALUES.has(value.toLowerCase()) ||
-		isCodeReferenceValue(value)
+		isCodeReferenceValue(value) ||
+		isFixtureAssignmentValue(value, options.file)
 	);
 }
 
@@ -106,6 +140,7 @@ export function severityAtOrAbove(
 export function scanContentForSecrets(
 	content: string,
 	maxFindings: number,
+	options: SecretScanOptions = {},
 ): SecretFinding[] {
 	if (!content || maxFindings <= 0) {
 		return [];
@@ -123,7 +158,7 @@ export function scanContentForSecrets(
 			}
 
 			const matchText = selectSecretMatchText(match, pattern.secretGroup);
-			if (shouldIgnoreAssignmentFinding(pattern.name, matchText)) {
+			if (shouldIgnoreAssignmentFinding(pattern.name, matchText, options)) {
 				continue;
 			}
 
@@ -178,7 +213,7 @@ export function scanDiffForSecrets(
 			}
 
 			const matchText = selectSecretMatchText(match, pattern.secretGroup);
-			if (shouldIgnoreAssignmentFinding(pattern.name, matchText)) {
+			if (shouldIgnoreAssignmentFinding(pattern.name, matchText, { file: currentFile })) {
 				continue;
 			}
 

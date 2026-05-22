@@ -1,7 +1,7 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { BLOCKED_EVENT_CHANNEL } from "./constants.js";
 import { redactSensitiveReadContent } from "./read-redactor.js";
@@ -9,6 +9,28 @@ import type {
 	ResolvedSensitiveGuardConfig,
 	SensitiveGuardBlockedEvent,
 } from "./types.js";
+
+let blockedEventLogQueue: Promise<void> = Promise.resolve();
+
+function enqueueBlockedEventLog(logPath: string, line: string): void {
+	blockedEventLogQueue = blockedEventLogQueue.then(
+		async () => {
+			await mkdir(dirname(logPath), { recursive: true });
+			await appendFile(logPath, `${line}\n`, "utf-8");
+		},
+		async () => {
+			await mkdir(dirname(logPath), { recursive: true });
+			await appendFile(logPath, `${line}\n`, "utf-8");
+		},
+	);
+	void blockedEventLogQueue.catch(() => {
+		// Blocked-event logging must never affect sensitive guard enforcement.
+	});
+}
+
+export function flushBlockedEventLog(): Promise<void> {
+	return blockedEventLogQueue.catch(() => undefined);
+}
 
 function safeJsonStringify(value: unknown): string {
 	const seen = new WeakSet<object>();
@@ -100,12 +122,7 @@ export function emitBlocked(
 		}
 
 		if (config.blockedEvents.log) {
-			mkdirSync(dirname(config.blockedEvents.logPath), { recursive: true });
-			appendFileSync(
-				config.blockedEvents.logPath,
-				`${safeJsonStringify(sanitizedEvent)}\n`,
-				"utf-8",
-			);
+			enqueueBlockedEventLog(config.blockedEvents.logPath, safeJsonStringify(sanitizedEvent));
 		}
 
 		return undefined;

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import {
@@ -37,6 +37,10 @@ function toObject(value: unknown): Record<string, unknown> {
 
 function clonePatternList(patterns: PatternConfig[]): PatternConfig[] {
 	return patterns.map((pattern) => ({ ...pattern }));
+}
+
+function cloneResolvedConfig(config: ResolvedSensitiveGuardConfig): ResolvedSensitiveGuardConfig {
+	return JSON.parse(JSON.stringify(config)) as ResolvedSensitiveGuardConfig;
 }
 
 function cloneDefaultConfig(): ResolvedSensitiveGuardConfig {
@@ -562,6 +566,26 @@ function parseConfigFromPath(path: string): {
 	return normalizeSensitiveGuardConfig(parsed);
 }
 
+let cachedLoadResult: ConfigLoadResult | undefined;
+let cachedLoadFingerprint: string | undefined;
+
+function cloneLoadResult(result: ConfigLoadResult): ConfigLoadResult {
+	return {
+		...result,
+		config: cloneResolvedConfig(result.config),
+		warnings: [...result.warnings],
+	};
+}
+
+function getPrimaryConfigFingerprint(): string {
+	try {
+		const stats = statSync(PRIMARY_CONFIG_PATH);
+		return `${PRIMARY_CONFIG_PATH}:${stats.mtimeMs}:${stats.size}`;
+	} catch {
+		return "missing";
+	}
+}
+
 export function ensureConfigExists(): EnsureConfigResult {
 	if (existsSync(PRIMARY_CONFIG_PATH)) {
 		return { created: false };
@@ -581,28 +605,41 @@ export function ensureConfigExists(): EnsureConfigResult {
 }
 
 export function loadConfig(): ConfigLoadResult {
+	const fingerprint = getPrimaryConfigFingerprint();
+	if (cachedLoadResult && cachedLoadFingerprint === fingerprint) {
+		return cloneLoadResult(cachedLoadResult);
+	}
+
 	try {
+		let result: ConfigLoadResult;
 		if (existsSync(PRIMARY_CONFIG_PATH)) {
 			const parsed = parseConfigFromPath(PRIMARY_CONFIG_PATH);
-			return {
+			result = {
 				config: parsed.config,
 				source: "primary",
 				path: PRIMARY_CONFIG_PATH,
 				warnings: parsed.warnings,
 			};
+		} else {
+			result = {
+				config: cloneDefaultConfig(),
+				source: "fallback",
+				warnings: [],
+			};
 		}
 
-		return {
-			config: cloneDefaultConfig(),
-			source: "fallback",
-			warnings: [],
-		};
+		cachedLoadFingerprint = fingerprint;
+		cachedLoadResult = cloneLoadResult(result);
+		return result;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		return {
+		const result: ConfigLoadResult = {
 			config: cloneDefaultConfig(),
 			source: "fallback",
 			warnings: [`Failed to load ${PRIMARY_CONFIG_PATH}: ${message}`],
 		};
+		cachedLoadFingerprint = fingerprint;
+		cachedLoadResult = cloneLoadResult(result);
+		return result;
 	}
 }

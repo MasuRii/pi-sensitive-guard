@@ -35,6 +35,7 @@ export class AsyncBufferedLogWriter {
 	private flushPromise: Promise<void> | null = null;
 	private flushRequestedWhileBusy = false;
 	private shutdownHooksRegistered = false;
+	private shutdownFlushHandler: (() => void) | null = null;
 
 	constructor(private readonly options: AsyncBufferedLogWriterOptions) {
 		this.enabled = options.enabled;
@@ -68,6 +69,7 @@ export class AsyncBufferedLogWriter {
 
 		this.enabled = enabled;
 		if (!enabled) {
+			this.unregisterShutdownHooks();
 			this.clearBuffer();
 		}
 	}
@@ -154,9 +156,24 @@ export class AsyncBufferedLogWriter {
 		const flushSafely = (): void => {
 			void this.flush();
 		};
+		this.shutdownFlushHandler = flushSafely;
 		process.once("beforeExit", flushSafely);
-		process.once("SIGINT", flushSafely);
-		process.once("SIGTERM", flushSafely);
+	}
+
+	private unregisterShutdownHooks(): void {
+		if (!this.shutdownHooksRegistered || !this.shutdownFlushHandler) {
+			return;
+		}
+
+		process.off("beforeExit", this.shutdownFlushHandler);
+		this.shutdownHooksRegistered = false;
+		this.shutdownFlushHandler = null;
+	}
+
+	async dispose(): Promise<void> {
+		this.unregisterShutdownHooks();
+		await this.flush();
+		this.clearBuffer();
 	}
 
 	private pushLine(line: string): void {

@@ -5,7 +5,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	isToolCallEventType,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 import { ensureConfigExists, loadConfig } from "./config.js";
 import { registerSensitiveGuardConfigCommand } from "./config-command.js";
@@ -25,7 +25,7 @@ import {
 	WRITE_SECURITY_MESSAGE,
 } from "./messages.js";
 import {
-	evaluateProtectedFileEdits,
+	evaluateProtectedFileEditInput,
 	evaluateProtectedFileWrite,
 } from "./protected-file-edits.js";
 import { redactSensitiveReadContent } from "./read-redactor.js";
@@ -63,8 +63,58 @@ function getCommandBlockMessage(result: CommandCheckResult): string {
 	return `Blocked: ${result.reason}`;
 }
 
-function getEditReplacementContent(edits: ReadonlyArray<{ newText: string }>): string {
-	return edits.map((edit) => edit.newText).join("\n");
+function collectStringValue(value: unknown, chunks: string[]): void {
+	if (typeof value === "string" && value.length > 0) {
+		chunks.push(value);
+	}
+}
+
+function collectLineValue(value: unknown, chunks: string[]): void {
+	if (Array.isArray(value)) {
+		const lines = value.filter((line): line is string => typeof line === "string");
+		if (lines.length > 0) {
+			chunks.push(lines.join("\n"));
+		}
+		return;
+	}
+
+	collectStringValue(value, chunks);
+}
+
+function collectEditReplacementContent(edit: unknown, chunks: string[]): void {
+	const editRecord = toRecord(edit);
+	collectStringValue(editRecord.newText, chunks);
+	collectStringValue(editRecord.new_text, chunks);
+	collectStringValue(editRecord.text, chunks);
+	collectStringValue(editRecord.content, chunks);
+	collectLineValue(editRecord.lines, chunks);
+
+	for (const nestedKey of ["set_line", "replace_lines", "insert_after", "replace"] as const) {
+		const nestedRecord = toRecord(editRecord[nestedKey]);
+		collectStringValue(nestedRecord.newText, chunks);
+		collectStringValue(nestedRecord.new_text, chunks);
+		collectStringValue(nestedRecord.text, chunks);
+		collectStringValue(nestedRecord.content, chunks);
+		collectLineValue(nestedRecord.lines, chunks);
+	}
+}
+
+function getEditReplacementContent(input: unknown): string {
+	const inputRecord = toRecord(input);
+	const chunks: string[] = [];
+	collectStringValue(inputRecord.newText, chunks);
+	collectStringValue(inputRecord.new_text, chunks);
+
+	const edits = Array.isArray(inputRecord.edits)
+		? inputRecord.edits
+		: Array.isArray(input)
+			? input
+			: [];
+	for (const edit of edits) {
+		collectEditReplacementContent(edit, chunks);
+	}
+
+	return chunks.filter((chunk) => chunk.length > 0).join("\n");
 }
 
 function resolveToolPath(cwd: string, path: string): string {
@@ -231,6 +281,10 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 		refreshConfig(ctx);
 	});
 
+	pi.on("session_shutdown", async () => {
+		await debugLogger.dispose();
+	});
+
 	pi.on("tool_call", async (event, ctx) => {
 		try {
 			if (!config.enabled) {
@@ -334,6 +388,7 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 						scanContentForSecrets(
 							event.input.content,
 							config.contentScanning.maxFindings,
+							{ file: event.input.path },
 						),
 						config.contentScanning.blockSeverity,
 					);
@@ -365,9 +420,26 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 			if (isToolCallEventType("edit", event)) {
 				const pathResult = matcher.checkWritePath(event.input.path);
 				if (pathResult.blocked) {
-					const evaluation = config.protectedFileEdits.enabled
-						? evaluateProtectedFileEdits(event.input.edits, config)
-						: { allowed: false, reason: pathResult.reason };
+					let evaluation = { allowed: false, reason: pathResult.reason };
+					if (config.protectedFileEdits.enabled) {
+						try {
+							const currentContent = readFileSync(
+								resolveToolPath(ctx.cwd, event.input.path),
+								"utf-8",
+							);
+							evaluation = evaluateProtectedFileEditInput(
+								currentContent,
+								event.input,
+								config,
+							);
+						} catch (error) {
+							const message = error instanceof Error ? error.message : String(error);
+							evaluation = {
+								allowed: false,
+								reason: `Protected file edit could not be validated safely: ${message}`,
+							};
+						}
+					}
 					if (!evaluation.allowed) {
 						notify(ctx, getPathBlockMessage("write", pathResult.target ?? event.input.path), "error");
 						reportBlockedEvent(
@@ -394,8 +466,9 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 				if (config.contentScanning.enabled) {
 					const findings = getBlockableSecretFindings(
 						scanContentForSecrets(
-							getEditReplacementContent(event.input.edits),
+							getEditReplacementContent(event.input),
 							config.contentScanning.maxFindings,
+							{ file: event.input.path },
 						),
 						config.contentScanning.blockSeverity,
 					);

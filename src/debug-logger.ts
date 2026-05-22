@@ -102,4 +102,8 @@ export class SensitiveGuardDebugLogger {
 	flush(): Promise<void> {
 		return this.writer.flush();
 	}
+
+	dispose(): Promise<void> {
+		return this.writer.dispose();
+	}
 }
