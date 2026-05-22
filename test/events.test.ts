@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { DEFAULT_CONFIG } from "../src/constants.js";
-import { emitBlocked } from "../src/events.js";
+import { emitBlocked, flushBlockedEventLog } from "../src/events.js";
 import type { ResolvedSensitiveGuardConfig, SensitiveGuardBlockedEvent } from "../src/types.js";
 
-test("redacts sensitive command metadata before blocked events are emitted or logged", () => {
+test("redacts sensitive command metadata before blocked events are emitted or logged", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "pi-sensitive-guard-events-"));
 	const logPath = join(tempDir, "blocked-events.jsonl");
 	const emittedEvents: unknown[] = [];
@@ -47,6 +47,7 @@ test("redacts sensitive command metadata before blocked events are emitted or lo
 		const error = emitBlocked(pi, config, event);
 		assert.equal(error, undefined);
 		assert.equal(emittedEvents.length, 1);
+		await flushBlockedEventLog();
 
 		const emitted = JSON.stringify(emittedEvents[0]);
 		const logContent = readFileSync(logPath, "utf-8");

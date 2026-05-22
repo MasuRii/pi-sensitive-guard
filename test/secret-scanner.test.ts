@@ -43,17 +43,65 @@ test("detects JSON-style sensitive credential assignments without exposing value
 test("detects added JSON-style sensitive credentials in diffs", () => {
 	const syntheticAccessToken = createSyntheticToken("access-diff");
 	const diff = [
-		"diff --git a/auth.example.json b/auth.example.json",
-		"+++ b/auth.example.json",
+		"diff --git a/src/auth.json b/src/auth.json",
+		"+++ b/src/auth.json",
 		`+  "access": "${syntheticAccessToken}"`,
 	].join("\n");
 
 	const findings = scanDiffForSecrets(diff, 5);
 
 	assert.equal(findings.length, 1);
-	assert.equal(findings[0]?.file, "auth.example.json");
+	assert.equal(findings[0]?.file, "src/auth.json");
 	assert.equal(findings[0]?.severity, "high");
 	assert.match(findings[0]?.snippet ?? "", /access/);
 	assert.match(findings[0]?.snippet ?? "", /\[REDACTED/);
 	assert.doesNotMatch(findings[0]?.snippet ?? "", /synthetic-access-diff/);
+});
+
+test("ignores human-readable placeholder credential assignments in test fixtures", () => {
+	const placeholderSecret = ["paid", "stale", "exhausted", "token"].join("-");
+	const content = JSON.stringify({ secret: placeholderSecret });
+
+	const findings = scanContentForSecrets(content, 5, {
+		file: "agent/extensions/pi-multi-auth/tests/credential-entitlement.test.ts",
+	});
+
+	assert.deepEqual(findings, []);
+});
+
+test("keeps generic placeholder credential assignments blockable outside fixture paths", () => {
+	const placeholderSecret = ["paid", "stale", "exhausted", "token"].join("-");
+	const content = JSON.stringify({ secret: placeholderSecret });
+
+	const findings = scanContentForSecrets(content, 5, {
+		file: "src/runtime-config.ts",
+	});
+
+	assert.equal(findings.length, 1);
+	assert.equal(findings[0]?.name, "Sensitive Credential Assignment");
+});
+
+test("keeps known secret formats blockable even in test fixtures", () => {
+	const openAiKey = `sk-${"A".repeat(24)}`;
+	const content = JSON.stringify({ secret: openAiKey });
+
+	const findings = scanContentForSecrets(content, 5, {
+		file: "test/secret-scanner.test.ts",
+	});
+
+	assert.equal(findings.length, 1);
+	assert.equal(findings[0]?.name, "OpenAI API Key");
+});
+
+test("ignores human-readable placeholder credential assignments in fixture diffs", () => {
+	const placeholderSecret = ["paid", "stale", "exhausted", "token"].join("-");
+	const diff = [
+		"diff --git a/test/example.test.ts b/test/example.test.ts",
+		"+++ b/test/example.test.ts",
+		`+${JSON.stringify({ secret: placeholderSecret })}`,
+	].join("\n");
+
+	const findings = scanDiffForSecrets(diff, 5);
+
+	assert.deepEqual(findings, []);
 });
