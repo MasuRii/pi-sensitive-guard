@@ -14,6 +14,7 @@ Sensitive-file protection extension for the [Pi coding agent](https://github.com
 - Scans write/edit content and Git commit/push diffs for common high-severity secret patterns.
 - Keeps runtime configuration simple with top-level enable/disable, debug logging, read-redaction controls, protected-edit controls, and the `/sensitive-guard` menu.
 - Allows optional non-sensitive edits to protected files when `protectedFileEdits.enabled` is explicitly enabled.
+- Supports both legacy text replacements and structured `edit` line operations for protected-file safe-edit checks.
 - Redacts structured JSON values, key/value assignments, embedded assignments, private keys, and known secret patterns while preserving safe output shape.
 - Writes debug output only to the extension-local `debug/` directory when `debug` is enabled.
 - Emits/logs blocked-event metadata after redacting sensitive values.
@@ -87,6 +88,8 @@ Actual global path: $PI_CODING_AGENT_DIR/extensions/pi-sensitive-guard/config.js
 | `readRedaction.includeShellOutput` | boolean | `false` | Also redact shell-command output when protected files are read through shell commands. |
 | `readRedaction.scope` | `protectedOnly` \| `allOutput` | `protectedOnly` | Choose whether redaction applies only to protected read flows or to every read/shell output path covered by the redaction settings. |
 | `protectedFileEdits.enabled` | boolean | `false` | Allow safe non-sensitive write/edit changes to protected files; sensitive key/value, structure, or secret-bearing edits remain blocked. |
+
+When protected-file edits are enabled, the guard recognizes exact `oldText`/`newText` replacements, `replace_text`, and structured line-edit operations. The proposed result is still blocked if it changes sensitive keys or structure, introduces detected secret patterns, or cannot be evaluated safely.
 
 ### Example config
 

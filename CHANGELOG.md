@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-22
+
+### Added
+- Added structured protected-file edit validation for `edit` line operations and `replace_text`/`oldText` replacements when `protectedFileEdits.enabled` is explicitly enabled.
+
+### Changed
+- Hardened protected-file edit evaluation to check resulting content, changed values, sensitive-key changes, and detected secrets before allowing protected edits.
+- Redacted blocked-event/debug payloads and routed debug writes through asynchronous file logging with shutdown disposal.
+
 ## [0.3.0] - 2026-05-04
 
 ### Added
