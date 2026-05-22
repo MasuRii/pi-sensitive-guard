@@ -1,4 +1,4 @@
-import type { ExecResult } from "@mariozechner/pi-coding-agent";
+import type { ExecResult } from "@earendil-works/pi-coding-agent";
 
 import { formatSecretFindings, getBlockableSecretFindings, scanDiffForSecrets } from "./secret-scanner.js";
 import { parseShellCommand } from "./shell-parser.js";
