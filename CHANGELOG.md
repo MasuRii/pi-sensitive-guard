@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-26
+
+### Changed
+- Widened peer dependency ranges to `^0.74.0 || ^0.75.0`.
+- Aligned dev dependencies to `^0.75.5`.
+
 ## [0.4.0] - 2026-05-22
 
 ### Added
