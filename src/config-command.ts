@@ -18,9 +18,9 @@ import type {
 	SecretSeverity,
 } from "./types.js";
 
-interface ConfigCommandOptions {
+export interface ConfigCommandOptions {
 	getConfig: () => ResolvedSensitiveGuardConfig;
-	refreshConfig: (ctx: ExtensionContext) => void;
+	refreshConfig: (ctx: ExtensionContext) => void | Promise<void>;
 }
 
 type RuntimeConfig = Record<string, unknown>;
@@ -148,7 +148,7 @@ async function persistAndRefresh(
 		return;
 	}
 
-	options.refreshConfig(ctx);
+	await options.refreshConfig(ctx);
 	ctx.ui.notify(successMessage, "info");
 }
 
@@ -278,7 +278,7 @@ async function editRawConfig(
 		return;
 	}
 
-	options.refreshConfig(ctx);
+	await options.refreshConfig(ctx);
 	ctx.ui.notify(`${EXTENSION_NAME}: config saved and applied.`, "info");
 }
 
@@ -485,6 +485,31 @@ async function openConfigMenu(
 	}
 }
 
+export function getSensitiveGuardConfigCommandCompletions(prefix: string): { value: string; label: string }[] | null {
+	const completions = ["status", "edit"].filter((entry) => entry.startsWith(prefix));
+	return completions.length > 0
+		? completions.map((value) => ({ value, label: value }))
+		: null;
+}
+
+export async function runSensitiveGuardConfigCommand(
+	args: string,
+	ctx: ExtensionCommandContext,
+	options: ConfigCommandOptions,
+): Promise<void> {
+	const command = args.trim().toLowerCase();
+	if (command === "status") {
+		ctx.ui.notify(formatStatus(options.getConfig()), "info");
+		return;
+	}
+	if (command === "edit") {
+		await editRawConfig(ctx, options);
+		return;
+	}
+
+	await openConfigMenu(ctx, options);
+}
+
 export function registerSensitiveGuardConfigCommand(
 	pi: ExtensionAPI,
 	options: ConfigCommandOptions,
@@ -495,24 +520,9 @@ export function registerSensitiveGuardConfigCommand(
 
 	pi.registerCommand("sensitive-guard", {
 		description: "Configure pi-sensitive-guard",
-		getArgumentCompletions: (prefix) => {
-			const completions = ["status", "edit"].filter((entry) => entry.startsWith(prefix));
-			return completions.length > 0
-				? completions.map((value) => ({ value, label: value }))
-				: null;
-		},
+		getArgumentCompletions: getSensitiveGuardConfigCommandCompletions,
 		handler: async (args, ctx) => {
-			const command = args.trim().toLowerCase();
-			if (command === "status") {
-				ctx.ui.notify(formatStatus(options.getConfig()), "info");
-				return;
-			}
-			if (command === "edit") {
-				await editRawConfig(ctx, options);
-				return;
-			}
-
-			await openConfigMenu(ctx, options);
+			await runSensitiveGuardConfigCommand(args, ctx, options);
 		},
 	});
 }
