@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-01
+
+### Changed
+- Deferred heavy module loading during extension bootstrap.
+- Lazy-loaded shell parsing and made command matching checks asynchronous.
+- Exported the sensitive-guard config command handler for deferred command registration.
+- Widened the Pi coding-agent peer dependency range to include `^0.77.0 || ^0.78.0` and aligned the development dependency to `^0.78.0`.
+
 ## [0.4.1] - 2026-05-26
 
 ### Changed
