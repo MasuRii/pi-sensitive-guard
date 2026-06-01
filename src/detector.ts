@@ -6,7 +6,6 @@ import {
 	FILE_READ_COMMANDS,
 	FILE_WRITE_COMMANDS,
 } from "./constants.js";
-import { parseShellCommand } from "./shell-parser.js";
 import type {
 	CommandCheckResult,
 	GuardCheckResult,
@@ -22,6 +21,28 @@ const NEVER_MATCH_PATTERN = /$a/;
 const READ_COMMAND_SET = new Set(FILE_READ_COMMANDS.map((command) => command.toLowerCase()));
 const WRITE_COMMAND_SET = new Set(FILE_WRITE_COMMANDS.map((command) => command.toLowerCase()));
 const DELETE_COMMAND_SET = new Set(FILE_DELETE_COMMANDS.map((command) => command.toLowerCase()));
+
+type ShellParserModule = typeof import("./shell-parser.js");
+
+let shellParserModule: ShellParserModule | undefined;
+let shellParserModulePromise: Promise<ShellParserModule> | undefined;
+
+async function loadShellParserModule(): Promise<ShellParserModule> {
+	if (shellParserModule) {
+		return shellParserModule;
+	}
+
+	shellParserModulePromise ??= import("./shell-parser.js").then((module) => {
+		shellParserModule = module;
+		return module;
+	});
+	return shellParserModulePromise;
+}
+
+async function parseShellCommandLazy(command: string): Promise<ParsedShellCommand[]> {
+	const { parseShellCommand } = await loadShellParserModule();
+	return parseShellCommand(command);
+}
 
 interface CompiledPattern {
 	source: PatternConfig;
@@ -311,12 +332,12 @@ export function createSensitiveGuardMatcher(
 		checkWritePath,
 		checkDeletePath,
 
-		checkReadCommand(command: string): CommandCheckResult {
+		async checkReadCommand(command: string): Promise<CommandCheckResult> {
 			if (!command || typeof command !== "string") {
 				return createAllowedCommandResult();
 			}
 
-			for (const parsedCommand of parseShellCommand(command)) {
+			for (const parsedCommand of await parseShellCommandLazy(command)) {
 				const redirectResult = checkRedirects(
 					parsedCommand.redirects,
 					"read",
@@ -355,12 +376,12 @@ export function createSensitiveGuardMatcher(
 			return createAllowedCommandResult();
 		},
 
-		checkWriteCommand(command: string): CommandCheckResult {
+		async checkWriteCommand(command: string): Promise<CommandCheckResult> {
 			if (!command || typeof command !== "string") {
 				return createAllowedCommandResult();
 			}
 
-			for (const parsedCommand of parseShellCommand(command)) {
+			for (const parsedCommand of await parseShellCommandLazy(command)) {
 				const redirectResult = checkRedirects(
 					parsedCommand.redirects,
 					"write",
@@ -408,12 +429,12 @@ export function createSensitiveGuardMatcher(
 			return createAllowedCommandResult();
 		},
 
-		checkDeleteCommand(command: string): CommandCheckResult {
+		async checkDeleteCommand(command: string): Promise<CommandCheckResult> {
 			if (!command || typeof command !== "string") {
 				return createAllowedCommandResult();
 			}
 
-			for (const parsedCommand of parseShellCommand(command)) {
+			for (const parsedCommand of await parseShellCommandLazy(command)) {
 				const commandWords = getCommandWords(parsedCommand);
 				const commandName = getCommandName(commandWords);
 				const subcommand = getCommandSubcommand(commandWords);

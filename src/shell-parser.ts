@@ -1,4 +1,3 @@
-import { parse } from "@aliou/sh";
 import type {
 	Command,
 	Program,
@@ -13,6 +12,23 @@ import type { ParsedShellCommand, ParsedShellRedirect } from "./types.js";
 const QUOTED_OR_BARE_TOKEN_PATTERN =
 	/"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|`(?:\\.|[^`])*`|[^\s]+/g;
 const REDIRECT_TOKEN_PATTERN = /^(\d*>>?\|?|\d*<<?-?|&?>|<?&?|<>)(.*)$/;
+
+type ShellAstParserModule = typeof import("@aliou/sh");
+
+let shellAstParserModule: ShellAstParserModule | undefined;
+let shellAstParserModulePromise: Promise<ShellAstParserModule> | undefined;
+
+async function loadShellAstParserModule(): Promise<ShellAstParserModule> {
+	if (shellAstParserModule) {
+		return shellAstParserModule;
+	}
+
+	shellAstParserModulePromise ??= import("@aliou/sh").then((module) => {
+		shellAstParserModule = module;
+		return module;
+	});
+	return shellAstParserModulePromise;
+}
 
 function partToString(part: WordPart): string {
 	switch (part.type) {
@@ -214,8 +230,9 @@ function parseTokenSegment(segment: string): ParsedShellCommand {
 	};
 }
 
-function parseAstCommand(command: string): ParsedShellCommand[] {
+async function parseAstCommand(command: string): Promise<ParsedShellCommand[]> {
 	const parsedCommands: ParsedShellCommand[] = [];
+	const { parse } = await loadShellAstParserModule();
 	const { ast } = parse(command);
 
 	walkCommands(ast, (simpleCommand) => {
@@ -240,13 +257,13 @@ function parseAstCommand(command: string): ParsedShellCommand[] {
 	return parsedCommands;
 }
 
-export function parseShellCommand(command: string): ParsedShellCommand[] {
+export async function parseShellCommand(command: string): Promise<ParsedShellCommand[]> {
 	if (!command || typeof command !== "string") {
 		return [];
 	}
 
 	try {
-		const parsedCommands = parseAstCommand(command);
+		const parsedCommands = await parseAstCommand(command);
 		if (parsedCommands.length > 0) {
 			return parsedCommands;
 		}

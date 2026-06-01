@@ -152,9 +152,9 @@ export interface SensitiveGuardMatcher {
 	checkReadPath(filePath: string): GuardCheckResult;
 	checkWritePath(filePath: string): GuardCheckResult;
 	checkDeletePath(filePath: string): GuardCheckResult;
-	checkReadCommand(command: string): CommandCheckResult;
-	checkWriteCommand(command: string): CommandCheckResult;
-	checkDeleteCommand(command: string): CommandCheckResult;
+	checkReadCommand(command: string): Promise<CommandCheckResult>;
+	checkWriteCommand(command: string): Promise<CommandCheckResult>;
+	checkDeleteCommand(command: string): Promise<CommandCheckResult>;
 }
 
 export interface SecretPatternDefinition {

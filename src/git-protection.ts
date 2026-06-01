@@ -21,13 +21,13 @@ function createAllowedResult(): GitProtectionCheckResult {
 	return { blocked: false, reason: "" };
 }
 
-function detectGitActions(
+async function detectGitActions(
 	command: string,
 	config: ResolvedSensitiveGuardConfig,
-): GitActionTarget[] {
+): Promise<GitActionTarget[]> {
 	const actions = new Map<string, GitActionTarget>();
 
-	for (const parsedCommand of parseShellCommand(command)) {
+	for (const parsedCommand of await parseShellCommand(command)) {
 		const words = parsedCommand.words.map((word) => word.trim().toLowerCase()).filter(Boolean);
 		if (words[0] !== "git") {
 			continue;
@@ -228,7 +228,7 @@ export async function checkGitProtection(input: {
 	config: ResolvedSensitiveGuardConfig;
 }): Promise<GitProtectionCheckResult> {
 	const { command, cwd, exec, matcher, config } = input;
-	const actions = detectGitActions(command, config);
+	const actions = await detectGitActions(command, config);
 	if (actions.length === 0) {
 		return createAllowedResult();
 	}
