@@ -10,8 +10,9 @@ Sensitive-file protection extension for the [Pi coding agent](https://github.com
 
 ## Features
 
-- Protects `.env`, credential, private-key, and secret files from reads, writes, deletes, shell commands, commits, and pushes.
-- Scans write/edit content and Git commit/push diffs for common high-severity secret patterns.
+- Protects `.env`, credential, private-key, secret, Docker auth, Git credentials, shell startup, keychain, and system credential files from reads, writes, deletes, shell commands, commits, and pushes.
+- Scans write/edit content and Git commit/push diffs for common high-severity secret patterns including HashiCorp Vault, Doppler, 1Password, GitHub, Slack, AWS session, Stripe, SendGrid, and npm tokens.
+- Detects copy/move shell commands (`cp`, `copy`, `mv`, `move`, `install`) that read protected files, applying write-threshold protection to prevent credential exfiltration via file copy.
 - Keeps runtime configuration simple with top-level enable/disable, debug logging, read-redaction controls, protected-edit controls, and the `/sensitive-guard` menu.
 - Allows optional non-sensitive edits to protected files when `protectedFileEdits.enabled` is explicitly enabled.
 - Supports both legacy text replacements and structured `edit` line operations for protected-file safe-edit checks.
@@ -53,7 +54,7 @@ Typical protected flows include:
 
 - reading `.env`, key, token, credential, and private-key files;
 - writing or editing content that matches high-confidence secret patterns;
-- shell commands that read, write, delete, commit, or push protected secret-bearing files;
+- shell commands that read, copy, move, write, delete, commit, or push protected secret-bearing files;
 - optional protected reads with redacted output when `readRedaction.enabled` is set to `true`.
 
 ### `/sensitive-guard` command

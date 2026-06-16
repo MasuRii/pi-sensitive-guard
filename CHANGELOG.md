@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-06-16
+
+### Added
+- Expanded default protected-file patterns to cover Docker registry auth, Git credentials, shell startup files, macOS keychain/cookies, Unix system credentials, and backup files that may retain secrets.
+- Added HashiCorp Vault, Doppler, 1Password, GitHub user/refresh tokens, Slack session tokens, AWS session keys, Stripe live keys, SendGrid, and npm token secret patterns.
+- Added copy/move command detection (`cp`, `copy`, `mv`, `move`, `install`) as read-source operations with write-threshold protection.
+
+### Changed
+- Sensitive-key matching now recognizes `vault_token`, `doppler_token`, `stripe_key`, `stripe_secret`, `sendgrid_key`, and `npm_token` field names.
+- File-name matching now compares the leaf file name rather than the full normalized path for non-regex patterns.
+- Realpath resolution and existence checking now apply per-segment, improving accuracy for path tokens with intermediate symlinks.
+
 ## [0.4.2] - 2026-06-01
 
 ### Changed
