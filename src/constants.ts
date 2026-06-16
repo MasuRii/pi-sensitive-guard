@@ -44,6 +44,23 @@ export const DEFAULT_PROTECTED_PATTERN_CONFIGS: PatternConfig[] = [
 			"(^|[\\\\/])(?:service-account|google-credentials|firebase-adminsdk)[^\\\\/]*\\.json$",
 		regex: true,
 	},
+	// Docker registry auth (ref: hardstop-patterns/SCHEMA.md, opencode-damage-control)
+	{ pattern: "(^|[\\\\/])\\.docker/config\\.json$", regex: true },
+	// Git credentials store (ref: hardstop-patterns/read-dangerous.json, opencode-damage-control)
+	{ pattern: "(^|[\\\\/])\\.git-credentials$", regex: true },
+	// Shell startup files that may contain exported secrets (ref: claude-code-guardrails)
+	{ pattern: "(^|[\\\\/])\\.(bash|zsh)rc$", regex: true },
+	{ pattern: "(^|[\\\\/])\\.(bash_profile|zshenv|zprofile|profile)$", regex: true },
+	{ pattern: "(^|[\\\\/])\\.bash_logout$", regex: true },
+	// macOS keychain / cookies (ref: claude-code-guardrails)
+	{ pattern: "(^|[\\\\/])Library/Keychains/", regex: true },
+	{ pattern: "(^|[\\\\/])Library/Cookies/", regex: true },
+	// Unix system credential files (ref: claude-code-guardrails)
+	{ pattern: "^/etc/(shadow|sudoers|passwd)$", regex: true },
+	{ pattern: "^/etc/sudoers\\.d/", regex: true },
+	// Backup files that might retain secrets (ref: hardstop-patterns)
+	{ pattern: "(^|[\\\\/])\\.env\\.(bak|backup|old|orig|save)$", regex: true },
+	{ pattern: "(^|[\\\\/])credentials\\.(bak|backup|old|orig|save)$", regex: true },
 ];
 
 export const DEFAULT_SAFE_PATTERN_CONFIGS: PatternConfig[] = [
@@ -70,7 +87,7 @@ export const DEFAULT_SAFE_PATTERN_CONFIGS: PatternConfig[] = [
 ];
 
 const API_KEY_NAME_PATTERN = String.raw`(?:api[_-]?keys?|apikeys?)(?:[_-]?\d+)?`;
-const STANDARD_SENSITIVE_KEY_NAME_PATTERN = String.raw`(?:${API_KEY_NAME_PATTERN}|client[_-]?secret|app[_-]?secret|password|passwd|pwd|access[_-]?token|refresh[_-]?token|auth[_-]?token|bearer|private[_-]?key)`;
+const STANDARD_SENSITIVE_KEY_NAME_PATTERN = String.raw`(?:${API_KEY_NAME_PATTERN}|client[_-]?secret|app[_-]?secret|password|passwd|pwd|access[_-]?token|refresh[_-]?token|auth[_-]?token|bearer|private[_-]?key|vault[_-]?token|doppler[_-]?token|stripe[_-]?(?:key|secret)|sendgrid[_-]?key|npm[_-]?token)`;
 const DELIMITED_SENSITIVE_KEY_NAME_PATTERN = String.raw`(?:^|[_.-])(?:secret|token|${API_KEY_NAME_PATTERN})(?:[_.-]|$)`;
 const AUTH_CREDENTIAL_FIELD_NAME_PATTERN = String.raw`(?:key|access|refresh)`;
 const SENSITIVE_ASSIGNMENT_KEY_NAME_PATTERN = String.raw`(?:${STANDARD_SENSITIVE_KEY_NAME_PATTERN}|secret|token|${AUTH_CREDENTIAL_FIELD_NAME_PATTERN})`;
@@ -324,5 +341,69 @@ export const SECRET_PATTERNS: SecretPatternDefinition[] = [
 		pattern: createSensitiveAssignmentPattern(SENSITIVE_ASSIGNMENT_KEY_NAME_PATTERN),
 		severity: "high",
 		secretGroup: 1,
+	},
+	// HashiCorp Vault (ref: clawsec/rules/builtin/secrets-management.yaml)
+	{
+		name: "HashiCorp Vault Token",
+		pattern: /\bhvs\.[a-zA-Z0-9_-]{24}\b/,
+		severity: "critical",
+	},
+	{
+		name: "HashiCorp Vault Service Token",
+		pattern: /\bs\.[a-zA-Z0-9]{24}\b/,
+		severity: "critical",
+	},
+	// Doppler (ref: clawsec/rules/builtin/secrets-management.yaml)
+	{
+		name: "Doppler Token",
+		pattern: /\bdp\.pt\.[a-zA-Z0-9]+\b/,
+		severity: "critical",
+	},
+	// 1Password (ref: clawsec/rules/builtin/secrets-management.yaml)
+	{
+		name: "1Password Secret Reference",
+		pattern: /\bop:\/\/[^\s"]+/,
+		severity: "critical",
+	},
+	// GitHub (ref: clawsec/src/detectors/secrets/api-key-detector.ts)
+	{
+		name: "GitHub User Token",
+		pattern: /\bghu_[A-Za-z0-9]{36}\b/,
+		severity: "high",
+	},
+	{
+		name: "GitHub Refresh Token",
+		pattern: /\bghr_[A-Za-z0-9]{36}\b/,
+		severity: "high",
+	},
+	// Slack session token (ref: clawsec/src/detectors/secrets/api-key-detector.ts)
+	{
+		name: "Slack Session Token",
+		pattern: /\bxoxs-[0-9]+-[A-Za-z0-9-]{10,}\b/,
+		severity: "high",
+	},
+	// AWS session keys (ref: claude-code-guardrails/hooks/edit-write-guard.py)
+	{
+		name: "AWS Session Access Key",
+		pattern: /\bASIA[0-9A-Z]{16}\b/,
+		severity: "high",
+	},
+	// Stripe live key — explicit narrower pattern (ref: claude-code-guardrails/hooks/edit-write-guard.py)
+	{
+		name: "Stripe Live Key",
+		pattern: /\bsk_live_[A-Za-z0-9]{24,}\b/,
+		severity: "critical",
+	},
+	// SendGrid (ref: claude-code-guardrails/hooks/edit-write-guard.py)
+	{
+		name: "SendGrid API Key",
+		pattern: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/,
+		severity: "critical",
+	},
+	// npm (ref: claude-code-guardrails/hooks/edit-write-guard.py)
+	{
+		name: "npm Token",
+		pattern: /\bnpm_[A-Za-z0-9]{36}\b/,
+		severity: "high",
 	},
 ];

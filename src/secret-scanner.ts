@@ -169,6 +169,7 @@ export function scanContentForSecrets(
 					pattern.name,
 					pattern.severity,
 					index + 1,
+					options.file,
 				),
 			);
 			break;

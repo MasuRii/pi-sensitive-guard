@@ -159,8 +159,8 @@ test("allows protected file edits that add harmless comment lines", () => {
 	assert.equal(result.allowed, true);
 });
 
-test("allows structured replace_text protected file edits with exact oldText/newText", () => {
-	const result = evaluateProtectedFileEditInput(
+test("allows structured replace_text protected file edits with exact oldText/newText", async () => {
+	const result = await evaluateProtectedFileEditInput(
 		"MAX_CONCURRENT_REQUESTS=1\n",
 		{
 			path: "secrets.env",
@@ -178,8 +178,26 @@ test("allows structured replace_text protected file edits with exact oldText/new
 	assert.equal(result.allowed, true);
 });
 
-test("allows structured anchored protected file edits after applying them to current content", () => {
-	const result = evaluateProtectedFileEditInput(
+test("allows protected file edits accepted by Pi native fuzzy matching", async () => {
+	const result = await evaluateProtectedFileEditInput(
+		"MAX_CONCURRENT_REQUESTS=1   \n",
+		{
+			path: "secrets.env",
+			edits: [
+				{
+					oldText: "MAX_CONCURRENT_REQUESTS=1\n",
+					newText: "MAX_CONCURRENT_REQUESTS=2\n",
+				},
+			],
+		},
+		createConfig(),
+	);
+
+	assert.equal(result.allowed, true);
+});
+
+test("allows structured anchored protected file edits after applying them to current content", async () => {
+	const result = await evaluateProtectedFileEditInput(
 		"MAX_CONCURRENT_REQUESTS=1\n",
 		{
 			path: "secrets.env",
@@ -197,8 +215,8 @@ test("allows structured anchored protected file edits after applying them to cur
 	assert.equal(result.allowed, true);
 });
 
-test("blocks structured anchored protected file edits that touch sensitive values", () => {
-	const result = evaluateProtectedFileEditInput(
+test("blocks structured anchored protected file edits that touch sensitive values", async () => {
+	const result = await evaluateProtectedFileEditInput(
 		"AISTUDIO_API_KEY_1=old-secret-value-12345678901234567890\n",
 		{
 			path: "secrets.env",
@@ -217,8 +235,8 @@ test("blocks structured anchored protected file edits that touch sensitive value
 	assert.match(result.reason, /sensitive/i);
 });
 
-test("allows alternate hash-anchored edit shapes without extension-specific coupling", () => {
-	const result = evaluateProtectedFileEditInput(
+test("allows alternate hash-anchored edit shapes without extension-specific coupling", async () => {
+	const result = await evaluateProtectedFileEditInput(
 		"MAX_CONCURRENT_REQUESTS=1\n",
 		{
 			path: "secrets.env",
@@ -285,6 +303,20 @@ test("extension blocks configured protected file edits that touch sensitive valu
 	]);
 
 	assert.equal((result as { block?: boolean }).block, true);
+});
+
+test("extension returns protected edit validation details in block responses", async () => {
+	const result = await runEditToolCall([
+		{
+			oldText: "MISSING_NON_SECRET=1",
+			newText: "MISSING_NON_SECRET=2",
+		},
+	]);
+	const blocked = result as { block?: boolean; reason?: string };
+
+	assert.equal(blocked.block, true);
+	assert.match(blocked.reason ?? "", /Security block: protected write denied/);
+	assert.match(blocked.reason ?? "", /Text replacement oldText was not found/);
 });
 
 test("extension scans structured edit lines for secret-bearing content", async () => {

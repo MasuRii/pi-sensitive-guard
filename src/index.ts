@@ -7,6 +7,7 @@ import {
 	isToolCallEventType,
 } from "@earendil-works/pi-coding-agent";
 
+import { type ModuleCache, loadCachedModule } from "./module-loader.js";
 import type {
 	CommandCheckResult,
 	GuardFeature,
@@ -30,145 +31,55 @@ type SensitiveGuardDebugLogger = import("./debug-logger.js").SensitiveGuardDebug
 
 const EXTENSION_NAME = "pi-sensitive-guard";
 
-let configModule: ConfigModule | undefined;
-let configModulePromise: Promise<ConfigModule> | undefined;
-let configCommandModule: ConfigCommandModule | undefined;
-let configCommandModulePromise: Promise<ConfigCommandModule> | undefined;
-let debugLoggerModule: DebugLoggerModule | undefined;
-let debugLoggerModulePromise: Promise<DebugLoggerModule> | undefined;
-let detectorModule: DetectorModule | undefined;
-let detectorModulePromise: Promise<DetectorModule> | undefined;
-let eventsModule: EventsModule | undefined;
-let eventsModulePromise: Promise<EventsModule> | undefined;
-let gitProtectionModule: GitProtectionModule | undefined;
-let gitProtectionModulePromise: Promise<GitProtectionModule> | undefined;
-let messagesModule: MessagesModule | undefined;
-let messagesModulePromise: Promise<MessagesModule> | undefined;
-let protectedFileEditsModule: ProtectedFileEditsModule | undefined;
-let protectedFileEditsModulePromise: Promise<ProtectedFileEditsModule> | undefined;
-let readRedactorModule: ReadRedactorModule | undefined;
-let readRedactorModulePromise: Promise<ReadRedactorModule> | undefined;
-let secretScannerModule: SecretScannerModule | undefined;
-let secretScannerModulePromise: Promise<SecretScannerModule> | undefined;
+const configModuleCache: ModuleCache<ConfigModule> = {};
+const configCommandModuleCache: ModuleCache<ConfigCommandModule> = {};
+const debugLoggerModuleCache: ModuleCache<DebugLoggerModule> = {};
+const detectorModuleCache: ModuleCache<DetectorModule> = {};
+const eventsModuleCache: ModuleCache<EventsModule> = {};
+const gitProtectionModuleCache: ModuleCache<GitProtectionModule> = {};
+const messagesModuleCache: ModuleCache<MessagesModule> = {};
+const protectedFileEditsModuleCache: ModuleCache<ProtectedFileEditsModule> = {};
+const readRedactorModuleCache: ModuleCache<ReadRedactorModule> = {};
+const secretScannerModuleCache: ModuleCache<SecretScannerModule> = {};
 
 function loadConfigModule(): Promise<ConfigModule> {
-	if (configModule) {
-		return Promise.resolve(configModule);
-	}
-
-	configModulePromise ??= import("./config.js").then((module) => {
-		configModule = module;
-		return module;
-	});
-	return configModulePromise;
+	return loadCachedModule("./config.js", configModuleCache);
 }
 
 function loadConfigCommandModule(): Promise<ConfigCommandModule> {
-	if (configCommandModule) {
-		return Promise.resolve(configCommandModule);
-	}
-
-	configCommandModulePromise ??= import("./config-command.js").then((module) => {
-		configCommandModule = module;
-		return module;
-	});
-	return configCommandModulePromise;
+	return loadCachedModule("./config-command.js", configCommandModuleCache);
 }
 
 function loadDebugLoggerModule(): Promise<DebugLoggerModule> {
-	if (debugLoggerModule) {
-		return Promise.resolve(debugLoggerModule);
-	}
-
-	debugLoggerModulePromise ??= import("./debug-logger.js").then((module) => {
-		debugLoggerModule = module;
-		return module;
-	});
-	return debugLoggerModulePromise;
+	return loadCachedModule("./debug-logger.js", debugLoggerModuleCache);
 }
 
 function loadDetectorModule(): Promise<DetectorModule> {
-	if (detectorModule) {
-		return Promise.resolve(detectorModule);
-	}
-
-	detectorModulePromise ??= import("./detector.js").then((module) => {
-		detectorModule = module;
-		return module;
-	});
-	return detectorModulePromise;
+	return loadCachedModule("./detector.js", detectorModuleCache);
 }
 
 function loadEventsModule(): Promise<EventsModule> {
-	if (eventsModule) {
-		return Promise.resolve(eventsModule);
-	}
-
-	eventsModulePromise ??= import("./events.js").then((module) => {
-		eventsModule = module;
-		return module;
-	});
-	return eventsModulePromise;
+	return loadCachedModule("./events.js", eventsModuleCache);
 }
 
 function loadGitProtectionModule(): Promise<GitProtectionModule> {
-	if (gitProtectionModule) {
-		return Promise.resolve(gitProtectionModule);
-	}
-
-	gitProtectionModulePromise ??= import("./git-protection.js").then((module) => {
-		gitProtectionModule = module;
-		return module;
-	});
-	return gitProtectionModulePromise;
+	return loadCachedModule("./git-protection.js", gitProtectionModuleCache);
 }
 
 function loadMessagesModule(): Promise<MessagesModule> {
-	if (messagesModule) {
-		return Promise.resolve(messagesModule);
-	}
-
-	messagesModulePromise ??= import("./messages.js").then((module) => {
-		messagesModule = module;
-		return module;
-	});
-	return messagesModulePromise;
+	return loadCachedModule("./messages.js", messagesModuleCache);
 }
 
 function loadProtectedFileEditsModule(): Promise<ProtectedFileEditsModule> {
-	if (protectedFileEditsModule) {
-		return Promise.resolve(protectedFileEditsModule);
-	}
-
-	protectedFileEditsModulePromise ??= import("./protected-file-edits.js").then((module) => {
-		protectedFileEditsModule = module;
-		return module;
-	});
-	return protectedFileEditsModulePromise;
+	return loadCachedModule("./protected-file-edits.js", protectedFileEditsModuleCache);
 }
 
 function loadReadRedactorModule(): Promise<ReadRedactorModule> {
-	if (readRedactorModule) {
-		return Promise.resolve(readRedactorModule);
-	}
-
-	readRedactorModulePromise ??= import("./read-redactor.js").then((module) => {
-		readRedactorModule = module;
-		return module;
-	});
-	return readRedactorModulePromise;
+	return loadCachedModule("./read-redactor.js", readRedactorModuleCache);
 }
 
 function loadSecretScannerModule(): Promise<SecretScannerModule> {
-	if (secretScannerModule) {
-		return Promise.resolve(secretScannerModule);
-	}
-
-	secretScannerModulePromise ??= import("./secret-scanner.js").then((module) => {
-		secretScannerModule = module;
-		return module;
-	});
-	return secretScannerModulePromise;
+	return loadCachedModule("./secret-scanner.js", secretScannerModuleCache);
 }
 
 function notify(ctx: ExtensionContext, message: string, level: "warning" | "error"): void {
@@ -189,6 +100,15 @@ function getCommandBlockMessage(result: CommandCheckResult): string {
 	}
 
 	return `Blocked: ${result.reason}`;
+}
+
+function buildProtectedWriteBlockReason(securityMessage: string, detail: string): string {
+	const trimmedDetail = detail.trim();
+	if (!trimmedDetail) {
+		return securityMessage;
+	}
+
+	return `${securityMessage}\nReason: ${trimmedDetail}`;
 }
 
 function collectStringValue(value: unknown, chunks: string[]): void {
@@ -574,7 +494,10 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 							),
 						);
 						const { WRITE_SECURITY_MESSAGE } = await loadMessagesModule();
-						return { block: true, reason: WRITE_SECURITY_MESSAGE };
+						return {
+							block: true,
+							reason: buildProtectedWriteBlockReason(WRITE_SECURITY_MESSAGE, blockReason),
+						};
 					}
 				}
 
@@ -629,7 +552,7 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 								"utf-8",
 							);
 							const { evaluateProtectedFileEditInput } = await loadProtectedFileEditsModule();
-							evaluation = evaluateProtectedFileEditInput(
+							evaluation = await evaluateProtectedFileEditInput(
 								currentContent,
 								event.input,
 								activeConfig,
@@ -657,7 +580,10 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 							),
 						);
 						const { WRITE_SECURITY_MESSAGE } = await loadMessagesModule();
-						return { block: true, reason: WRITE_SECURITY_MESSAGE };
+						return {
+							block: true,
+							reason: buildProtectedWriteBlockReason(WRITE_SECURITY_MESSAGE, evaluation.reason),
+						};
 					}
 
 					writeDebug(ctx, "info", "protected_file_edit_allowed", {

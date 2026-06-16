@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { matchesGlob } from "node:path";
 
 import {
@@ -6,6 +6,7 @@ import {
 	FILE_READ_COMMANDS,
 	FILE_WRITE_COMMANDS,
 } from "./constants.js";
+import { type ModuleCache, loadCachedModule } from "./module-loader.js";
 import type {
 	CommandCheckResult,
 	GuardCheckResult,
@@ -19,24 +20,16 @@ import type {
 
 const NEVER_MATCH_PATTERN = /$a/;
 const READ_COMMAND_SET = new Set(FILE_READ_COMMANDS.map((command) => command.toLowerCase()));
+const READ_SOURCE_COMMAND_SET = new Set(["cp", "copy", "mv", "move", "install"]);
 const WRITE_COMMAND_SET = new Set(FILE_WRITE_COMMANDS.map((command) => command.toLowerCase()));
 const DELETE_COMMAND_SET = new Set(FILE_DELETE_COMMANDS.map((command) => command.toLowerCase()));
 
 type ShellParserModule = typeof import("./shell-parser.js");
 
-let shellParserModule: ShellParserModule | undefined;
-let shellParserModulePromise: Promise<ShellParserModule> | undefined;
+const shellParserModuleCache: ModuleCache<ShellParserModule> = {};
 
 async function loadShellParserModule(): Promise<ShellParserModule> {
-	if (shellParserModule) {
-		return shellParserModule;
-	}
-
-	shellParserModulePromise ??= import("./shell-parser.js").then((module) => {
-		shellParserModule = module;
-		return module;
-	});
-	return shellParserModulePromise;
+	return loadCachedModule("./shell-parser.js", shellParserModuleCache);
 }
 
 async function parseShellCommandLazy(command: string): Promise<ParsedShellCommand[]> {
@@ -89,7 +82,8 @@ function normalizePathToken(path: string): string {
 }
 
 function normalizeCommandWord(value: string): string {
-	return normalizePathToken(value).toLowerCase();
+	const normalized = normalizePathToken(value).toLowerCase();
+	return normalized.split("/").pop() ?? normalized;
 }
 
 function compilePattern(pattern: PatternConfig): CompiledPattern {
@@ -138,15 +132,37 @@ function createBlockedResult(
 	target: string,
 	ruleId: string,
 	protection: ProtectionLevel,
+	resolvedTarget?: string,
 ): GuardCheckResult {
+	let reason = `Path '${target}' is protected by rule '${ruleId}' (${protection}).`;
+	if (resolvedTarget && resolvedTarget !== target) {
+		reason = `Path '${target}' (resolved to '${resolvedTarget}') is protected by rule '${ruleId}' (${protection}).`;
+	}
 	return {
 		blocked: true,
-		reason: `Path '${target}' is protected by rule '${ruleId}' (${protection}).`,
+		reason,
 		kind,
 		target,
 		ruleId,
 		protection,
 	};
+}
+
+function candidatePaths(inputPath: string): string[] {
+	const normalized = normalizePathToken(inputPath);
+	if (!normalized) {
+		return [];
+	}
+	const candidates = new Set<string>([normalized]);
+	try {
+		const resolved = realpathSync(inputPath).replace(/\\/g, "/");
+		if (resolved && resolved !== normalized) {
+			candidates.add(resolved);
+		}
+	} catch {
+		// Path does not exist or is unreachable; rely on the normalized path.
+	}
+	return [...candidates];
 }
 
 function getActionThreshold(action: "read" | "write" | "delete"): number {
@@ -237,6 +253,24 @@ function getCommandSubcommand(words: string[]): string {
 	return "";
 }
 
+function getReadCandidateWords(commandName: string, words: string[]): string[] {
+	if (!READ_SOURCE_COMMAND_SET.has(commandName)) {
+		return words.slice(1);
+	}
+
+	const operands = words.slice(1).filter((word) => !normalizePathToken(word).startsWith("-"));
+	return operands.length > 1 ? operands.slice(0, -1) : operands;
+}
+
+function getWriteCandidateWords(commandName: string, words: string[]): string[] {
+	if (!READ_SOURCE_COMMAND_SET.has(commandName)) {
+		return words.slice(1);
+	}
+
+	const operands = words.slice(1).filter((word) => !normalizePathToken(word).startsWith("-"));
+	return operands.length > 1 ? operands.slice(-1) : operands;
+}
+
 function checkRedirects(
 	redirects: ParsedShellCommand["redirects"],
 	kind: "read" | "write",
@@ -268,60 +302,72 @@ export function createSensitiveGuardMatcher(
 	const evaluatePath = (
 		filePath: string,
 		action: "read" | "write" | "delete",
+		threshold = getActionThreshold(action),
 	): GuardCheckResult => {
 		if (!config.enabled || !filePath || typeof filePath !== "string") {
 			return createAllowedResult();
 		}
 
-		const normalizedPath = normalizePathToken(filePath);
-		if (!normalizedPath) {
+		const paths = candidatePaths(filePath);
+		if (paths.length === 0) {
 			return createAllowedResult();
 		}
 
-		let winningRule: CompiledRule | null = null;
-		let winningRank = -1;
-		for (const rule of compiledRules) {
-			if (!rule.enabled) {
+		const originalPath = paths[0];
+
+		for (let index = 0; index < paths.length; index += 1) {
+			const normalizedPath = paths[index];
+
+			let winningRule: CompiledRule | null = null;
+			let winningRank = -1;
+			for (const rule of compiledRules) {
+				if (!rule.enabled) {
+					continue;
+				}
+
+				if (!rule.patterns.some((pattern) => pattern.test(normalizedPath))) {
+					continue;
+				}
+
+				if (rule.allowedPatterns.some((pattern) => pattern.test(normalizedPath))) {
+					continue;
+				}
+
+				if (rule.onlyIfExists && !existsSync(normalizedPath)) {
+					continue;
+				}
+
+				const rank = getProtectionRank(rule.protection);
+				if (rank > winningRank) {
+					winningRule = rule;
+					winningRank = rank;
+				}
+			}
+
+			if (!winningRule) {
 				continue;
 			}
 
-			if (!rule.patterns.some((pattern) => pattern.test(normalizedPath))) {
+			if (getProtectionRank(winningRule.protection) < threshold) {
 				continue;
 			}
 
-			if (rule.allowedPatterns.some((pattern) => pattern.test(normalizedPath))) {
-				continue;
-			}
-
-			if (rule.onlyIfExists && !existsSync(normalizedPath)) {
-				continue;
-			}
-
-			const rank = getProtectionRank(rule.protection);
-			if (rank > winningRank) {
-				winningRule = rule;
-				winningRank = rank;
-			}
+			return createBlockedResult(
+				action,
+				originalPath,
+				winningRule.id,
+				winningRule.protection,
+				index > 0 ? normalizedPath : undefined,
+			);
 		}
 
-		if (!winningRule) {
-			return createAllowedResult();
-		}
-
-		if (getProtectionRank(winningRule.protection) < getActionThreshold(action)) {
-			return createAllowedResult();
-		}
-
-		return createBlockedResult(
-			action,
-			normalizedPath,
-			winningRule.id,
-			winningRule.protection,
-		);
+		return createAllowedResult();
 	};
 
 	const checkReadPath = (filePath: string): GuardCheckResult =>
 		evaluatePath(filePath, "read");
+	const checkReadSourcePath = (filePath: string): GuardCheckResult =>
+		evaluatePath(filePath, "read", getActionThreshold("write"));
 	const checkWritePath = (filePath: string): GuardCheckResult =>
 		evaluatePath(filePath, "write");
 	const checkDeletePath = (filePath: string): GuardCheckResult =>
@@ -354,13 +400,13 @@ export function createSensitiveGuardMatcher(
 
 				const commandWords = getCommandWords(parsedCommand);
 				const commandName = getCommandName(commandWords);
-				if (!READ_COMMAND_SET.has(commandName)) {
+				if (!READ_COMMAND_SET.has(commandName) && !READ_SOURCE_COMMAND_SET.has(commandName)) {
 					continue;
 				}
 
 				const sensitivePath = findSensitivePathInWords(
-					parsedCommand.words.slice(1),
-					checkReadPath,
+					getReadCandidateWords(commandName, parsedCommand.words),
+					READ_SOURCE_COMMAND_SET.has(commandName) ? checkReadSourcePath : checkReadPath,
 					"read",
 				);
 				if (sensitivePath.blocked) {
@@ -399,7 +445,7 @@ export function createSensitiveGuardMatcher(
 				const commandWords = getCommandWords(parsedCommand);
 				const commandName = getCommandName(commandWords);
 				const sensitivePath = findSensitivePathInWords(
-					parsedCommand.words.slice(1),
+					getWriteCandidateWords(commandName, parsedCommand.words),
 					checkWritePath,
 					"write",
 				);

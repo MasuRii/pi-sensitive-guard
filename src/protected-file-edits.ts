@@ -33,9 +33,82 @@ interface StructuredEditApplication {
 	error?: string;
 }
 
+interface PiNativeEditDiffModule {
+	normalizeToLF: (text: string) => string;
+	applyEditsToNormalizedContent: (
+		normalizedContent: string,
+		edits: Array<Pick<EditReplacement, "oldText" | "newText">>,
+		path: string,
+	) => { baseContent: string; newContent: string };
+}
+
 export interface ProtectedFileEditEvaluation {
 	allowed: boolean;
 	reason: string;
+}
+
+let piNativeEditDiffModulePromise: Promise<PiNativeEditDiffModule | undefined> | undefined;
+
+function resolvePiNativeEditDiffModuleUrl(): string {
+	const packageEntryUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
+	return new URL("./core/tools/edit-diff.js", packageEntryUrl).href;
+}
+
+async function loadPiNativeEditDiffModule(): Promise<PiNativeEditDiffModule | undefined> {
+	piNativeEditDiffModulePromise ??= Promise.resolve()
+		.then(() => import(resolvePiNativeEditDiffModuleUrl()))
+		.then((module: unknown) => {
+			const candidate = module as Partial<PiNativeEditDiffModule>;
+			if (
+				typeof candidate.normalizeToLF !== "function" ||
+				typeof candidate.applyEditsToNormalizedContent !== "function"
+			) {
+				return undefined;
+			}
+			return candidate as PiNativeEditDiffModule;
+		})
+		.catch(() => undefined);
+	return piNativeEditDiffModulePromise;
+}
+
+function normalizePiNativeEditError(message: string): string {
+	if (/Could not find (?:the exact text|edits\[\d+\])/.test(message)) {
+		return `Text replacement oldText was not found in the current file. Pi native edit detail: ${message}`;
+	}
+
+	if (/Found \d+ occurrences/.test(message)) {
+		return `Text replacement oldText is not unique in the current file. Pi native edit detail: ${message}`;
+	}
+
+	return message;
+}
+
+async function applyPiNativeTextReplacements(
+	content: string,
+	replacements: EditReplacement[],
+	path: string,
+): Promise<StructuredEditApplication | undefined> {
+	if (replacements.some((replacement) => replacement.all)) {
+		return undefined;
+	}
+
+	const piEditDiff = await loadPiNativeEditDiffModule();
+	if (!piEditDiff) {
+		return undefined;
+	}
+
+	try {
+		const normalizedContent = piEditDiff.normalizeToLF(content);
+		const { newContent } = piEditDiff.applyEditsToNormalizedContent(
+			normalizedContent,
+			replacements.map(({ oldText, newText }) => ({ oldText, newText })),
+			path,
+		);
+		return { content: newContent, recognized: true };
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { content, recognized: true, error: normalizePiNativeEditError(message) };
+	}
 }
 
 const JSON_KEY_VALUE_PATTERN = /^\s*"([^"]+)"\s*:\s*(.*?)\s*,?\s*$/;
@@ -440,8 +513,16 @@ function extractTextReplacement(edit: unknown): EditReplacement | undefined {
 	return undefined;
 }
 
-function applyStructuredEditInput(currentContent: string, editsOrInput: unknown): StructuredEditApplication {
+function getEditInputPath(root: Record<string, unknown>): string {
+	return typeof root.path === "string" ? root.path : "protected file";
+}
+
+async function applyStructuredEditInput(
+	currentContent: string,
+	editsOrInput: unknown,
+): Promise<StructuredEditApplication> {
 	const root = toRecord(editsOrInput);
+	const path = getEditInputPath(root);
 	const topLevelOldText = root.oldText ?? root.old_text;
 	const topLevelNewText = root.newText ?? root.new_text;
 	let content = currentContent;
@@ -455,7 +536,12 @@ function applyStructuredEditInput(currentContent: string, editsOrInput: unknown)
 			};
 		}
 
-		return applyTextReplacement(content, { oldText: topLevelOldText, newText: topLevelNewText });
+		const piNativeResult = await applyPiNativeTextReplacements(
+			content,
+			[{ oldText: topLevelOldText, newText: topLevelNewText }],
+			path,
+		);
+		return piNativeResult ?? applyTextReplacement(content, { oldText: topLevelOldText, newText: topLevelNewText });
 	}
 
 	const rawEdits = Array.isArray(editsOrInput)
@@ -465,6 +551,28 @@ function applyStructuredEditInput(currentContent: string, editsOrInput: unknown)
 			: [];
 	if (rawEdits.length === 0) {
 		return { content, recognized: false };
+	}
+
+	const nativeTextReplacements: EditReplacement[] = [];
+	let allEditsAreNativeTextReplacements = true;
+	for (const edit of rawEdits) {
+		const textReplacement = extractTextReplacement(edit);
+		if (!textReplacement || textReplacement.all) {
+			allEditsAreNativeTextReplacements = false;
+			break;
+		}
+		nativeTextReplacements.push(textReplacement);
+	}
+
+	if (allEditsAreNativeTextReplacements) {
+		const piNativeResult = await applyPiNativeTextReplacements(
+			content,
+			nativeTextReplacements,
+			path,
+		);
+		if (piNativeResult) {
+			return piNativeResult;
+		}
 	}
 
 	const lineEdits: StructuredLineEdit[] = [];
@@ -666,16 +774,16 @@ export function evaluateProtectedFileEdits(
 	return createAllowedEvaluation();
 }
 
-export function evaluateProtectedFileEditInput(
+export async function evaluateProtectedFileEditInput(
 	currentContent: string,
 	editsOrInput: unknown,
 	config: ResolvedSensitiveGuardConfig,
-): ProtectedFileEditEvaluation {
+): Promise<ProtectedFileEditEvaluation> {
 	if (!config.protectedFileEdits.enabled) {
 		return createBlockedEvaluation("Protected file non-sensitive edit bypass is disabled.");
 	}
 
-	const application = applyStructuredEditInput(currentContent, editsOrInput);
+	const application = await applyStructuredEditInput(currentContent, editsOrInput);
 	if (application.error) {
 		return createBlockedEvaluation(application.error);
 	}
