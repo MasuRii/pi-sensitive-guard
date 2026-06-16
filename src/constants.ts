@@ -138,6 +138,7 @@ export const DEFAULT_CONFIG: ResolvedSensitiveGuardConfig = {
 		enabled: true,
 		blockSeverity: "high",
 		maxFindings: 20,
+		customPatterns: [],
 	},
 	blockedEvents: {
 		emit: true,
@@ -228,7 +229,7 @@ export const FILE_DELETE_COMMANDS = [
 	"gvfs-trash",
 ] as const;
 
-export const SECRET_PATTERNS: SecretPatternDefinition[] = [
+export const DEFAULT_SECRET_PATTERNS: SecretPatternDefinition[] = [
 	{ name: "AWS Access Key ID", pattern: /\bAKIA[0-9A-Z]{16}\b/, severity: "critical" },
 	{
 		name: "AWS Secret Access Key",

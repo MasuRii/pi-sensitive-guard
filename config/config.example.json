@@ -10,6 +10,19 @@
     "includeShellOutput": false,
     "scope": "protectedOnly"
   },
+  "contentScanning": {
+    "enabled": true,
+    "blockSeverity": "high",
+    "maxFindings": 20,
+    "customPatterns": [
+      {
+        "_comment": "Add your own secret patterns here. Pattern is a regex string.",
+        "name": "My Internal API Key",
+        "pattern": "myapi_[A-Za-z0-9]{32}",
+        "severity": "high"
+      }
+    ]
+  },
   "blockedEvents": {
     "emit": true,
     "log": true,

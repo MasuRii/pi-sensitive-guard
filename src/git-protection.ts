@@ -283,7 +283,7 @@ export async function checkGitProtection(input: {
 
 		if (config.contentScanning.enabled) {
 			const findings = getBlockableSecretFindings(
-				scanDiffForSecrets(diff, config.contentScanning.maxFindings),
+				scanDiffForSecrets(diff, config.contentScanning.maxFindings, config.contentScanning.customPatterns),
 				config.contentScanning.blockSeverity,
 			);
 			if (findings.length > 0) {

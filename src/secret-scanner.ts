@@ -1,5 +1,5 @@
-import { SECRET_PATTERNS } from "./constants.js";
-import type { SecretFinding, SecretSeverity } from "./types.js";
+import { DEFAULT_SECRET_PATTERNS } from "./constants.js";
+import type { SecretFinding, SecretPatternDefinition, SecretSeverity } from "./types.js";
 
 const SEVERITY_ORDER: Record<SecretSeverity, number> = {
 	medium: 1,
@@ -141,17 +141,22 @@ export function scanContentForSecrets(
 	content: string,
 	maxFindings: number,
 	options: SecretScanOptions = {},
+	additionalPatterns: SecretPatternDefinition[] = [],
 ): SecretFinding[] {
 	if (!content || maxFindings <= 0) {
 		return [];
 	}
+
+	const allPatterns = additionalPatterns.length > 0
+		? [...DEFAULT_SECRET_PATTERNS, ...additionalPatterns]
+		: DEFAULT_SECRET_PATTERNS;
 
 	const findings: SecretFinding[] = [];
 	const lines = content.split(/\r?\n/);
 
 	for (let index = 0; index < lines.length; index += 1) {
 		const line = lines[index] ?? "";
-		for (const pattern of SECRET_PATTERNS) {
+		for (const pattern of allPatterns) {
 			const match = line.match(pattern.pattern);
 			if (!match) {
 				continue;
@@ -186,10 +191,15 @@ export function scanContentForSecrets(
 export function scanDiffForSecrets(
 	diff: string,
 	maxFindings: number,
+	additionalPatterns: SecretPatternDefinition[] = [],
 ): SecretFinding[] {
 	if (!diff || maxFindings <= 0) {
 		return [];
 	}
+
+	const allPatterns = additionalPatterns.length > 0
+		? [...DEFAULT_SECRET_PATTERNS, ...additionalPatterns]
+		: DEFAULT_SECRET_PATTERNS;
 
 	const findings: SecretFinding[] = [];
 	const lines = diff.split(/\r?\n/);
@@ -207,7 +217,7 @@ export function scanDiffForSecrets(
 		}
 
 		const content = line.slice(1);
-		for (const pattern of SECRET_PATTERNS) {
+		for (const pattern of allPatterns) {
 			const match = content.match(pattern.pattern);
 			if (!match) {
 				continue;
