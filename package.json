@@ -1,6 +1,6 @@
 {
   "name": "pi-sensitive-guard",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Pi extension that protects sensitive files, blocks secret writes, and optionally redacts protected read output.",
   "type": "module",
   "main": "./index.ts",
@@ -62,14 +62,14 @@
     ]
   },
   "dependencies": {
-    "@aliou/sh": "^0.1.0"
+    "@aliou/sh": "^0.2.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.74.0 || ^0.75.0"
+    "@earendil-works/pi-coding-agent": "^0.74.0 || ^0.75.0 || ^0.78.0 || ^0.79.0"
   },
   "devDependencies": {
-    "@types/node": "^25.9.1",
+    "@types/node": "^25.9.3",
     "typescript": "^6.0.3",
-    "@earendil-works/pi-coding-agent": "^0.75.5"
+    "@earendil-works/pi-coding-agent": "^0.79.4"
   }
 }
