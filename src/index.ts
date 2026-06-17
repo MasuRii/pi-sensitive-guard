@@ -512,6 +512,7 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 							event.input.content,
 							activeConfig.contentScanning.maxFindings,
 							{ file: event.input.path },
+							activeConfig.contentScanning.customPatterns,
 						),
 						activeConfig.contentScanning.blockSeverity,
 					);
@@ -603,6 +604,7 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 							getEditReplacementContent(event.input),
 							activeConfig.contentScanning.maxFindings,
 							{ file: event.input.path },
+							activeConfig.contentScanning.customPatterns,
 						),
 						activeConfig.contentScanning.blockSeverity,
 					);
@@ -793,7 +795,7 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 					return block;
 				}
 
-				const redacted = redactSensitiveReadContent(block.text, activeConfig.readRedaction);
+				const redacted = redactSensitiveReadContent(block.text, activeConfig.readRedaction, activeConfig.contentScanning.customPatterns);
 				if (!redacted.redacted) {
 					return block;
 				}

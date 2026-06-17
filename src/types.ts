@@ -39,6 +39,7 @@ export interface ContentScanningConfig {
 	enabled?: boolean;
 	blockSeverity?: SecretSeverity;
 	maxFindings?: number;
+	customPatterns?: CustomSecretPatternConfig[];
 }
 
 export interface BlockedEventsConfig {
@@ -101,6 +102,7 @@ export interface ResolvedSensitiveGuardConfig {
 		enabled: boolean;
 		blockSeverity: SecretSeverity;
 		maxFindings: number;
+		customPatterns: SecretPatternDefinition[];
 	};
 	blockedEvents: {
 		emit: boolean;
@@ -162,6 +164,19 @@ export interface SecretPatternDefinition {
 	pattern: RegExp;
 	severity: SecretSeverity;
 	secretGroup?: number;
+}
+
+/**
+ * User-facing config shape for custom secret patterns (from JSON).
+ * Pattern is a string that gets compiled to RegExp at config load time.
+ * If `flags` is omitted, defaults to case-insensitive ("i").
+ */
+export interface CustomSecretPatternConfig {
+	name: string;
+	pattern: string;
+	severity: SecretSeverity;
+	secretGroup?: number;
+	flags?: string;
 }
 
 export interface SecretFinding {

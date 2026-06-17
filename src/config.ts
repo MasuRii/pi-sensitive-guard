@@ -10,6 +10,7 @@ import {
 	DEFAULT_SENSITIVE_KEY_PATTERN_CONFIGS,
 	PRIMARY_CONFIG_PATH,
 } from "./constants.js";
+import { compileCustomPatterns } from "./custom-patterns.js";
 import type {
 	BlockedEventsConfig,
 	ConfigLoadResult,
@@ -53,7 +54,7 @@ function cloneDefaultConfig(): ResolvedSensitiveGuardConfig {
 			allowedPatterns: clonePatternList(rule.allowedPatterns),
 		})),
 		gitProtection: { ...DEFAULT_CONFIG.gitProtection },
-		contentScanning: { ...DEFAULT_CONFIG.contentScanning },
+		contentScanning: { ...DEFAULT_CONFIG.contentScanning, customPatterns: [] },
 		blockedEvents: { ...DEFAULT_CONFIG.blockedEvents },
 		readRedaction: {
 			...DEFAULT_CONFIG.readRedaction,
@@ -390,6 +391,11 @@ function normalizeContentScanning(
 	warnings: string[],
 ): ResolvedSensitiveGuardConfig["contentScanning"] {
 	const record = toObject(value) as ContentScanningConfig;
+	const customPatterns = compileCustomPatterns(
+		(record as Record<string, unknown>).customPatterns,
+		warnings,
+		"contentScanning.customPatterns",
+	);
 	return {
 		enabled: normalizeBoolean(
 			record.enabled,
@@ -409,6 +415,7 @@ function normalizeContentScanning(
 			"contentScanning.maxFindings",
 			warnings,
 		),
+		customPatterns,
 	};
 }
 
