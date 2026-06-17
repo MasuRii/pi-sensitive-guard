@@ -121,16 +121,12 @@ function isCodeReferenceValue(value: string): boolean {
 	return CODE_REFERENCE_VALUE_PATTERN.test(value);
 }
 
-function matchesKnownSecretValue(value: string, additionalPatterns: SecretPatternDefinition[] = []): boolean {
+function matchesKnownSecretValue(value: string, allPatterns: SecretPatternDefinition[]): boolean {
 	PRIVATE_KEY_BLOCK_PATTERN.lastIndex = 0;
 	if (PRIVATE_KEY_BLOCK_PATTERN.test(value)) {
 		PRIVATE_KEY_BLOCK_PATTERN.lastIndex = 0;
 		return true;
 	}
-
-	const allPatterns = additionalPatterns.length > 0
-		? [...DEFAULT_SECRET_PATTERNS, ...additionalPatterns]
-		: DEFAULT_SECRET_PATTERNS;
 
 	for (const definition of allPatterns) {
 		definition.pattern.lastIndex = 0;
@@ -143,7 +139,7 @@ function matchesKnownSecretValue(value: string, additionalPatterns: SecretPatter
 	return false;
 }
 
-function isLikelySensitiveStandaloneValue(rawValue: string, additionalPatterns: SecretPatternDefinition[] = []): boolean {
+function isLikelySensitiveStandaloneValue(rawValue: string, allPatterns: SecretPatternDefinition[]): boolean {
 	const value = stripValueSyntax(rawValue);
 	if (!value || NON_SECRET_STANDALONE_VALUES.has(value.toLowerCase())) {
 		return false;
@@ -153,7 +149,7 @@ function isLikelySensitiveStandaloneValue(rawValue: string, additionalPatterns: 
 		return false;
 	}
 
-	if (matchesKnownSecretValue(value, additionalPatterns)) {
+	if (matchesKnownSecretValue(value, allPatterns)) {
 		return true;
 	}
 
@@ -169,14 +165,14 @@ function shouldRedactSensitiveKeyValue(
 	rawValue: string,
 	placeholder: string,
 	keyPatterns: CompiledKeyPattern[],
-	additionalPatterns: SecretPatternDefinition[] = [],
+	allPatterns: SecretPatternDefinition[],
 ): boolean {
 	if (!isSensitiveKey(key, keyPatterns) || isPlaceholderValue(rawValue, placeholder)) {
 		return false;
 	}
 
 	if (isStandaloneAuthCredentialKey(key)) {
-		return isLikelySensitiveStandaloneValue(rawValue, additionalPatterns);
+		return isLikelySensitiveStandaloneValue(rawValue, allPatterns);
 	}
 
 	return true;
@@ -187,7 +183,7 @@ function shouldRedactJsonSensitiveKeyValue(
 	value: unknown,
 	placeholder: string,
 	keyPatterns: CompiledKeyPattern[],
-	additionalPatterns: SecretPatternDefinition[] = [],
+	allPatterns: SecretPatternDefinition[],
 ): boolean {
 	if (!isSensitiveKey(key, keyPatterns)) {
 		return false;
@@ -198,7 +194,7 @@ function shouldRedactJsonSensitiveKeyValue(
 	}
 
 	if (isStandaloneAuthCredentialKey(key)) {
-		return typeof value === "string" && isLikelySensitiveStandaloneValue(value, additionalPatterns);
+		return typeof value === "string" && isLikelySensitiveStandaloneValue(value, allPatterns);
 	}
 
 	return true;
@@ -214,10 +210,10 @@ function redactJsonValue(
 	placeholder: string,
 	keyPatterns: CompiledKeyPattern[],
 	state: { redactionCount: number },
-	additionalPatterns: SecretPatternDefinition[] = [],
+	allPatterns: SecretPatternDefinition[],
 ): unknown {
 	if (Array.isArray(value)) {
-		return value.map((entry) => redactJsonValue(entry, placeholder, keyPatterns, state, additionalPatterns));
+		return value.map((entry) => redactJsonValue(entry, placeholder, keyPatterns, state, allPatterns));
 	}
 
 	if (!value || typeof value !== "object") {
@@ -226,13 +222,13 @@ function redactJsonValue(
 
 	const redactedObject: Record<string, unknown> = {};
 	for (const [key, entry] of Object.entries(value)) {
-		if (shouldRedactJsonSensitiveKeyValue(key, entry, placeholder, keyPatterns, additionalPatterns)) {
+		if (shouldRedactJsonSensitiveKeyValue(key, entry, placeholder, keyPatterns, allPatterns)) {
 			redactedObject[key] = placeholder;
 			state.redactionCount += 1;
 			continue;
 		}
 
-		redactedObject[key] = redactJsonValue(entry, placeholder, keyPatterns, state, additionalPatterns);
+		redactedObject[key] = redactJsonValue(entry, placeholder, keyPatterns, state, allPatterns);
 	}
 
 	return redactedObject;
@@ -242,7 +238,7 @@ function redactJsonStructuredContent(
 	content: string,
 	placeholder: string,
 	keyPatterns: CompiledKeyPattern[],
-	additionalPatterns: SecretPatternDefinition[] = [],
+	allPatterns: SecretPatternDefinition[],
 ): { content: string; redactionCount: number } | null {
 	if (!shouldAttemptJsonRedaction(content)) {
 		return null;
@@ -251,7 +247,7 @@ function redactJsonStructuredContent(
 	try {
 		const parsed: unknown = JSON.parse(content);
 		const state = { redactionCount: 0 };
-		const redacted = redactJsonValue(parsed, placeholder, keyPatterns, state, additionalPatterns);
+		const redacted = redactJsonValue(parsed, placeholder, keyPatterns, state, allPatterns);
 		if (state.redactionCount === 0) {
 			return null;
 		}
@@ -270,7 +266,7 @@ function redactStructuredLine(
 	line: string,
 	placeholder: string,
 	keyPatterns: CompiledKeyPattern[],
-	additionalPatterns: SecretPatternDefinition[] = [],
+	allPatterns: SecretPatternDefinition[],
 ): { line: string; redacted: boolean } {
 	const jsonMatch = line.match(JSON_KEY_VALUE_PATTERN);
 	if (jsonMatch) {
@@ -278,7 +274,7 @@ function redactStructuredLine(
 		if (
 			key &&
 			value !== undefined &&
-			shouldRedactSensitiveKeyValue(key, value, placeholder, keyPatterns, additionalPatterns)
+			shouldRedactSensitiveKeyValue(key, value, placeholder, keyPatterns, allPatterns)
 		) {
 			return {
 				line: `${indentation}"${key}"${separator}${redactValuePreservingQuotes(value, placeholder)}${suffix}`,
@@ -293,7 +289,7 @@ function redactStructuredLine(
 		if (
 			key &&
 			value !== undefined &&
-			shouldRedactSensitiveKeyValue(key, value, placeholder, keyPatterns, additionalPatterns)
+			shouldRedactSensitiveKeyValue(key, value, placeholder, keyPatterns, allPatterns)
 		) {
 			return {
 				line: `${prefix}${key}${separator}${redactValuePreservingQuotes(value, placeholder)}${suffix}`,
@@ -308,7 +304,7 @@ function redactStructuredLine(
 		if (
 			key &&
 			value !== undefined &&
-			shouldRedactSensitiveKeyValue(key, value, placeholder, keyPatterns, additionalPatterns)
+			shouldRedactSensitiveKeyValue(key, value, placeholder, keyPatterns, allPatterns)
 		) {
 			return {
 				line: `${indentation}${key}${separator}${redactValuePreservingQuotes(value, placeholder)}${suffix}`,
@@ -324,7 +320,7 @@ function redactStructuredValues(
 	content: string,
 	placeholder: string,
 	keyPatterns: CompiledKeyPattern[],
-	additionalPatterns: SecretPatternDefinition[] = [],
+	allPatterns: SecretPatternDefinition[],
 ): { content: string; redactionCount: number } {
 	let redactionCount = 0;
 	const lines = content.split(/(\r?\n)/);
@@ -333,7 +329,7 @@ function redactStructuredValues(
 			return part;
 		}
 
-		const redacted = redactStructuredLine(part, placeholder, keyPatterns, additionalPatterns);
+		const redacted = redactStructuredLine(part, placeholder, keyPatterns, allPatterns);
 		if (redacted.redacted) {
 			redactionCount += 1;
 		}
@@ -347,7 +343,7 @@ function redactEmbeddedAssignments(
 	content: string,
 	placeholder: string,
 	keyPatterns: CompiledKeyPattern[],
-	additionalPatterns: SecretPatternDefinition[] = [],
+	allPatterns: SecretPatternDefinition[],
 ): { content: string; redactionCount: number } {
 	let redactionCount = 0;
 	const redactedContent = content.replace(
@@ -363,7 +359,7 @@ function redactEmbeddedAssignments(
 		) => {
 			if (
 				!value ||
-				!shouldRedactSensitiveKeyValue(key, value, placeholder, keyPatterns, additionalPatterns)
+				!shouldRedactSensitiveKeyValue(key, value, placeholder, keyPatterns, allPatterns)
 			) {
 				return match;
 			}
@@ -379,7 +375,7 @@ function redactEmbeddedAssignments(
 function redactKnownSecretPatterns(
 	content: string,
 	placeholder: string,
-	additionalPatterns: SecretPatternDefinition[] = [],
+	allPatterns: SecretPatternDefinition[],
 ): { content: string; redactionCount: number } {
 	let redactionCount = 0;
 	let redactedContent = content.replace(PRIVATE_KEY_BLOCK_PATTERN, (match) => {
@@ -389,10 +385,6 @@ function redactKnownSecretPatterns(
 		redactionCount += 1;
 		return placeholder;
 	});
-
-	const allPatterns = additionalPatterns.length > 0
-		? [...DEFAULT_SECRET_PATTERNS, ...additionalPatterns]
-		: DEFAULT_SECRET_PATTERNS;
 
 	for (const definition of allPatterns) {
 		const pattern = compileGlobalSecretPattern(definition.pattern);
@@ -427,27 +419,30 @@ export function redactSensitiveReadContent(
 		return createOversizedRedactionNotice(byteLength, maxBytes);
 	}
 
+	// Pre-compute merged pattern list once to avoid per-call array allocation.
+	const mergedPatterns = [...DEFAULT_SECRET_PATTERNS, ...customPatterns];
+
 	const keyPatterns = config.sensitiveKeyPatterns.map(compileKeyPattern);
 	const jsonStructured = redactJsonStructuredContent(
 		content,
 		config.placeholder,
 		keyPatterns,
-		customPatterns,
+		mergedPatterns,
 	);
 	const structured = redactStructuredValues(
 		jsonStructured?.content ?? content,
 		config.placeholder,
 		keyPatterns,
-		customPatterns,
+		mergedPatterns,
 	);
 	const embedded = redactEmbeddedAssignments(
 		structured.content,
 		config.placeholder,
 		keyPatterns,
-		customPatterns,
+		mergedPatterns,
 	);
 	const secretPatternResult = config.redactSecretPatterns
-		? redactKnownSecretPatterns(embedded.content, config.placeholder, customPatterns)
+		? redactKnownSecretPatterns(embedded.content, config.placeholder, mergedPatterns)
 		: { content: embedded.content, redactionCount: 0 };
 	const sensitiveKeyRedactionCount =
 		(jsonStructured?.redactionCount ?? 0) +

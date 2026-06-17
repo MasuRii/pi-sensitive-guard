@@ -408,3 +408,6 @@ export const DEFAULT_SECRET_PATTERNS: SecretPatternDefinition[] = [
 		severity: "high",
 	},
 ];
+
+/** Backwards-compatible alias for callers that imported `SECRET_PATTERNS`. */
+export { DEFAULT_SECRET_PATTERNS as SECRET_PATTERNS };

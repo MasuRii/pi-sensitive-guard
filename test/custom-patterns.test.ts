@@ -133,6 +133,28 @@ test("custom pattern with secretGroup captures the correct group", () => {
 	assert.equal(findings[0]?.name, "Bearer Token");
 });
 
+test("custom pattern with secretGroup redacts only the captured group in read content", () => {
+	const warnings: string[] = [];
+	const compiled = compileCustomPattern(
+		{ name: "Bearer Token", pattern: "Bearer\\s+([A-Za-z0-9_.]{20,})", severity: "high", secretGroup: 1 },
+		warnings,
+		"test",
+	);
+	assert.ok(compiled);
+
+	const content = "Authorization: Bearer sk-secret1234567890abcdef";
+	const result = redactSensitiveReadContent(
+		content,
+		{ ...DEFAULT_CONFIG.readRedaction, enabled: true, redactSecretPatterns: true },
+		[compiled!],
+	);
+
+	assert.equal(result.redacted, true);
+	assert.ok(result.content.includes("Bearer"), "Prefix 'Bearer' should be preserved");
+	assert.doesNotMatch(result.content, /sk-secret1234567890abcdef/, "Token should be redacted");
+	assert.ok(result.content.includes(placeholder), "Should contain the redaction placeholder");
+});
+
 test("backward compatibility: no custom patterns gives same behavior", () => {
 	const content = 'api_key = "sk-test backward-compat-padding1234"';
 

@@ -169,12 +169,14 @@ export interface SecretPatternDefinition {
 /**
  * User-facing config shape for custom secret patterns (from JSON).
  * Pattern is a string that gets compiled to RegExp at config load time.
+ * If `flags` is omitted, defaults to case-insensitive ("i").
  */
 export interface CustomSecretPatternConfig {
 	name: string;
 	pattern: string;
 	severity: SecretSeverity;
 	secretGroup?: number;
+	flags?: string;
 }
 
 export interface SecretFinding {

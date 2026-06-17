@@ -1,15 +1,7 @@
-import type { SecretPatternDefinition, SecretSeverity } from "./types.js";
+import type { CustomSecretPatternConfig, SecretPatternDefinition, SecretSeverity } from "./types.js";
 
-/**
- * User-facing config shape for custom secret patterns (from JSON).
- * Pattern is a string (regex source) that gets compiled to RegExp at load time.
- */
-export interface CustomSecretPatternConfig {
-	name: string;
-	pattern: string;
-	severity: SecretSeverity;
-	secretGroup?: number;
-}
+// Re-export so existing `import { CustomSecretPatternConfig } from "./custom-patterns.js"` still works.
+export type { CustomSecretPatternConfig };
 
 /**
  * Compile a user-provided custom pattern config (from JSON) into a runtime
@@ -40,9 +32,17 @@ export function compileCustomPattern(
 		return null;
 	}
 
+	const flags = config.flags ?? "i";
+	if (!/^[gimsuy]*$/.test(flags)) {
+		warnings.push(
+			`Invalid config value '${pathPrefix}.flags': expected only valid regex flags (i, g, m, s, u, y).`,
+		);
+		return null;
+	}
+
 	let compiled: RegExp;
 	try {
-		compiled = new RegExp(config.pattern, "i");
+		compiled = new RegExp(config.pattern, flags);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		warnings.push(`Invalid config value '${pathPrefix}.pattern': invalid regular expression: ${message}`);
