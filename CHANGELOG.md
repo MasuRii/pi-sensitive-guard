@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-03
+
+### Added
+- Added an `enabled` toggle, anti-loop blocking, and environment-variable echo detection. ([1c71f29](https://github.com/MasuRii/pi-sensitive-guard/commit/1c71f2989238cf592586b987ef606753fa407e01))
+- Added multi-encoding secret detection and a scan cache. ([a1468c9](https://github.com/MasuRii/pi-sensitive-guard/commit/a1468c93c1f0f65242fc0501cc8c30c5692e167e))
+- Added write-execute correlation for agent-written scripts. ([8a6e1a8](https://github.com/MasuRii/pi-sensitive-guard/commit/8a6e1a8cea29ce32534b375d2060f953c65a1bf9))
+- Added multi-scope config merge for project-local overrides. ([f96a277](https://github.com/MasuRii/pi-sensitive-guard/commit/f96a2770e5bb76b4c6196a0fbb167d94a0f19d34))
+
+### Changed
+- Extracted shared utilities and consolidated git-protection helpers, hardening protected-file edits. ([266de53](https://github.com/MasuRii/pi-sensitive-guard/commit/266de5302e80abbc41c974727cffea11cfd618bc) [e7e0672](https://github.com/MasuRii/pi-sensitive-guard/commit/e7e067247a4403828f467a73b6c469e1fb267606))
+- Updated README with badges and a Ko-fi link. ([1b7d89e](https://github.com/MasuRii/pi-sensitive-guard/commit/1b7d89ea5b5504a1b6f52c2946aaecf394fee03b))
+- Widened Pi peer dependency compatibility to include `^0.80.0` and added vulnerability overrides (`protobufjs`, `ws`). ([69cf308](https://github.com/MasuRii/pi-sensitive-guard/commit/69cf3081398593a78ebe40de27b4c12f1db2a043))
+
 ## [0.4.3] - 2026-06-16
 
 ### Added
