@@ -1,6 +1,12 @@
 import { matchesGlob } from "node:path";
 
 import { SECRET_PATTERNS } from "./constants.js";
+import {
+	compileRegex,
+	isCodeReferenceValue,
+	NON_SECRET_VALUES,
+	stripValueSyntax,
+} from "./shared/index.js";
 import type { PatternConfig, RedactionResult, ResolvedSensitiveGuardConfig } from "./types.js";
 
 interface CompiledKeyPattern {
@@ -8,38 +14,17 @@ interface CompiledKeyPattern {
 	test: (key: string) => boolean;
 }
 
-const NEVER_MATCH_PATTERN = /$a/;
+type RedactionCountResult = { content: string; redactionCount: number };
+
 const PRIVATE_KEY_BLOCK_PATTERN =
 	/-----BEGIN\s+(?:RSA\s+|EC\s+|DSA\s+|OPENSSH\s+|PGP\s+)?PRIVATE KEY(?:\s+BLOCK)?-----[\s\S]*?-----END\s+(?:RSA\s+|EC\s+|DSA\s+|OPENSSH\s+|PGP\s+)?PRIVATE KEY(?:\s+BLOCK)?-----/gi;
 const JSON_KEY_VALUE_PATTERN = /^(\s*)"([^"]+)"(\s*:\s*)(.*?)(\s*,?\s*)$/;
 const ASSIGNMENT_PATTERN = /^(\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_.-]*)(\s*[=:]\s*)(.*?)(\s*)$/;
 const YAML_KEY_VALUE_PATTERN = /^(\s*)([A-Za-z_][A-Za-z0-9_.-]*)(\s*:\s+)(.*?)(\s*)$/;
 const EMBEDDED_ASSIGNMENT_PATTERN = /(["']?)(\b[A-Za-z_][A-Za-z0-9_.-]*\b)\1(\s*[=:]\s*)(["']?)([^"'\s,;{}]+)(["']?)/g;
-const CODE_REFERENCE_VALUE_PATTERN = /^(?:process\.env\.|import\.meta\.env\.)?[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/;
+const ENCODED_SECRET_TOKEN_PATTERN = /[A-Za-z0-9][A-Za-z0-9+/_.-]{15,}={0,2}/g;
+const PRINTABLE_TEXT_PATTERN = /^[\t\n\r -~]+$/;
 const STANDALONE_AUTH_CREDENTIAL_KEYS = new Set(["key", "access", "refresh"]);
-const NON_SECRET_STANDALONE_VALUES = new Set([
-	"boolean",
-	"false",
-	"null",
-	"number",
-	"object",
-	"private",
-	"protected",
-	"public",
-	"string",
-	"true",
-	"undefined",
-	"unknown",
-	"void",
-]);
-
-function compileRegex(pattern: string, flags: string): RegExp {
-	try {
-		return new RegExp(pattern, flags);
-	} catch {
-		return NEVER_MATCH_PATTERN;
-	}
-}
 
 function compileGlobalSecretPattern(pattern: RegExp): RegExp {
 	const flags = new Set(pattern.flags.split(""));
@@ -104,21 +89,8 @@ function isPlaceholderValue(rawValue: string, placeholder: string): boolean {
 	);
 }
 
-function stripValueSyntax(rawValue: string): string {
-	let value = rawValue.trim().replace(/[;,]+$/g, "").trim();
-	const quote = value[0];
-	if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
-		value = value.slice(1, -1).trim();
-	}
-	return value;
-}
-
 function isStandaloneAuthCredentialKey(key: string): boolean {
 	return STANDALONE_AUTH_CREDENTIAL_KEYS.has(key.trim().toLowerCase());
-}
-
-function isCodeReferenceValue(value: string): boolean {
-	return CODE_REFERENCE_VALUE_PATTERN.test(value);
 }
 
 function matchesKnownSecretValue(value: string): boolean {
@@ -141,11 +113,11 @@ function matchesKnownSecretValue(value: string): boolean {
 
 function isLikelySensitiveStandaloneValue(rawValue: string): boolean {
 	const value = stripValueSyntax(rawValue);
-	if (!value || NON_SECRET_STANDALONE_VALUES.has(value.toLowerCase())) {
+	if (!value || NON_SECRET_VALUES.has(value.toLowerCase())) {
 		return false;
 	}
 
-	if (isCodeReferenceValue(value)) {
+	if (isCodeReferenceValue(rawValue)) {
 		return false;
 	}
 
@@ -158,6 +130,134 @@ function isLikelySensitiveStandaloneValue(rawValue: string): boolean {
 	}
 
 	return value.length >= 32 && /[A-Za-z]/.test(value) && /\d/.test(value);
+}
+
+function rot13(value: string): string {
+	return value.replace(/[A-Za-z]/g, (char) => {
+		const base = char <= "Z" ? 65 : 97;
+		return String.fromCharCode(((char.charCodeAt(0) - base + 13) % 26) + base);
+	});
+}
+
+function isPrintableDecodedValue(value: string): boolean {
+	return value.length > 0 && PRINTABLE_TEXT_PATTERN.test(value);
+}
+
+function tryDecodeBase64(value: string): string | undefined {
+	if (value.length < 16 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+		return undefined;
+	}
+
+	try {
+		const decoded = Buffer.from(value, "base64").toString("utf-8");
+		if (!isPrintableDecodedValue(decoded)) {
+			return undefined;
+		}
+
+		const normalizedInput = value.replace(/=+$/g, "");
+		const normalizedEncoded = Buffer.from(decoded, "utf-8")
+			.toString("base64")
+			.replace(/=+$/g, "");
+		return normalizedInput === normalizedEncoded ? decoded : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function tryDecodeHex(value: string): string | undefined {
+	if (value.length < 20 || value.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(value)) {
+		return undefined;
+	}
+
+	try {
+		const decoded = Buffer.from(value, "hex").toString("utf-8");
+		return isPrintableDecodedValue(decoded) ? decoded : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function getDecodedSecretCandidates(value: string): string[] {
+	const candidates = [tryDecodeBase64(value), tryDecodeHex(value), rot13(value), [...value].reverse().join("")];
+	return candidates.filter(
+		(candidate): candidate is string =>
+			typeof candidate === "string" && candidate.length > 0 && candidate !== value,
+	);
+}
+
+function isDecodedSecretValue(value: string): boolean {
+	if (value.length === 0) {
+		return false;
+	}
+
+	// Only treat decoded values as secrets when they match known secret patterns
+	// (API keys, private keys, JWTs, etc.) or exhibit high Shannon entropy.
+	// The broader isLikelySensitiveStandaloneValue heuristic is intentionally NOT
+	// used here because it was designed for key-value assignment context (where the
+	// key name provides sensitivity cues), not for arbitrary decoded tokens. Using
+	// it here causes false positives on package names and identifiers like
+	// "pi-glm-52-cloudflare-compat" whose ROT13 decode passes the standalone-value
+	// heuristic (length >= 20 with hyphens) despite being a low-entropy identifier.
+	if (matchesKnownSecretValue(value)) {
+		return true;
+	}
+
+	return isHighEntropySecretCandidate(value);
+}
+
+/**
+ * Matches kebab-case identifiers and package names (e.g. "pi-glm-52-cloudflare-compat")
+ * that should be excluded from encoded-secret detection. Real decoded secrets do
+ * not use hyphens as word separators between lowercase segments.
+ */
+const KEBAB_CASE_IDENTIFIER_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/;
+
+/**
+ * Minimum Shannon entropy (bits/char) for a decoded value to be treated as a secret
+ * candidate. Real secrets (API keys, tokens, passwords) typically exceed 3.5 bits/char
+ * due to mixed-case + digits + symbols.
+ */
+const MIN_SECRET_ENTROPY = 3.5;
+
+/**
+ * Matches UPPER_SNAKE_CASE constants (e.g. "PROVIDER_HISTORY_OMISSION_TEXT") that
+ * should be excluded from encoded-secret detection. Real decoded secrets do not
+ * use underscores as word separators between uppercase segments.
+ */
+const UPPER_SNAKE_CASE_PATTERN = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
+
+/**
+ * Matches camelCase identifiers (e.g. "maxSearchResults", "skillsSh") that should
+ * be excluded from encoded-secret detection. Real decoded secrets do not follow
+ * camelCase naming conventions.
+ */
+const CAMEL_CASE_PATTERN = /^[a-z][a-zA-Z0-9]+$/;
+
+function isHighEntropySecretCandidate(value: string): boolean {
+	if (value.length < 16) {
+		return false;
+	}
+
+	// Reject values that look like source-code identifiers: kebab-case package
+	// names (e.g. "pi-glm-52-cloudflare-compat") or UPPER_SNAKE_CASE constants
+	// (e.g. "PROVIDER_HISTORY_OMISSION_TEXT"). Real decoded secrets use mixed
+	// character classes without word-separator structure.
+	if (KEBAB_CASE_IDENTIFIER_PATTERN.test(value) || UPPER_SNAKE_CASE_PATTERN.test(value) || CAMEL_CASE_PATTERN.test(value)) {
+		return false;
+	}
+
+	const charFrequency = new Map<string, number>();
+	for (const char of value) {
+		charFrequency.set(char, (charFrequency.get(char) ?? 0) + 1);
+	}
+
+	let entropy = 0;
+	for (const count of charFrequency.values()) {
+		const probability = count / value.length;
+		entropy -= probability * Math.log2(probability);
+	}
+
+	return entropy >= MIN_SECRET_ENTROPY;
 }
 
 function shouldRedactSensitiveKeyValue(
@@ -235,7 +335,7 @@ function redactJsonStructuredContent(
 	content: string,
 	placeholder: string,
 	keyPatterns: CompiledKeyPattern[],
-): { content: string; redactionCount: number } | null {
+): RedactionCountResult | null {
 	if (!shouldAttemptJsonRedaction(content)) {
 		return null;
 	}
@@ -315,7 +415,7 @@ function redactStructuredValues(
 	content: string,
 	placeholder: string,
 	keyPatterns: CompiledKeyPattern[],
-): { content: string; redactionCount: number } {
+): RedactionCountResult {
 	let redactionCount = 0;
 	const lines = content.split(/(\r?\n)/);
 	const redactedLines = lines.map((part) => {
@@ -337,7 +437,7 @@ function redactEmbeddedAssignments(
 	content: string,
 	placeholder: string,
 	keyPatterns: CompiledKeyPattern[],
-): { content: string; redactionCount: number } {
+): RedactionCountResult {
 	let redactionCount = 0;
 	const redactedContent = content.replace(
 		EMBEDDED_ASSIGNMENT_PATTERN,
@@ -368,7 +468,7 @@ function redactEmbeddedAssignments(
 function redactKnownSecretPatterns(
 	content: string,
 	placeholder: string,
-): { content: string; redactionCount: number } {
+): RedactionCountResult {
 	let redactionCount = 0;
 	let redactedContent = content.replace(PRIVATE_KEY_BLOCK_PATTERN, (match) => {
 		if (match.includes(placeholder)) {
@@ -396,6 +496,32 @@ function redactKnownSecretPatterns(
 			return placeholder;
 		});
 	}
+
+	return { content: redactedContent, redactionCount };
+}
+
+function redactEncodedSecretValues(
+	content: string,
+	placeholder: string,
+): RedactionCountResult {
+	let redactionCount = 0;
+	const redactedContent = content.replace(ENCODED_SECRET_TOKEN_PATTERN, (match, offset: number, fullContent: string) => {
+		if (match.includes(placeholder)) {
+			return match;
+		}
+
+		const nextCharacter = fullContent[offset + match.length] ?? "";
+		if (match.endsWith("=") && /[A-Za-z0-9_]/.test(nextCharacter)) {
+			return match;
+		}
+
+		if (!getDecodedSecretCandidates(match).some(isDecodedSecretValue)) {
+			return match;
+		}
+
+		redactionCount += 1;
+		return placeholder;
+	});
 
 	return { content: redactedContent, redactionCount };
 }
@@ -429,11 +555,17 @@ export function redactSensitiveReadContent(
 	const secretPatternResult = config.redactSecretPatterns
 		? redactKnownSecretPatterns(embedded.content, config.placeholder)
 		: { content: embedded.content, redactionCount: 0 };
+	const encodedSecretResult = config.redactSecretPatterns
+		? redactEncodedSecretValues(secretPatternResult.content, config.placeholder)
+		: { content: secretPatternResult.content, redactionCount: 0 };
 	const sensitiveKeyRedactionCount =
 		(jsonStructured?.redactionCount ?? 0) +
 		structured.redactionCount +
 		embedded.redactionCount;
-	const redactionCount = sensitiveKeyRedactionCount + secretPatternResult.redactionCount;
+	const redactionCount =
+		sensitiveKeyRedactionCount +
+		secretPatternResult.redactionCount +
+		encodedSecretResult.redactionCount;
 	const reasons: string[] = [];
 	if (sensitiveKeyRedactionCount > 0) {
 		reasons.push("sensitive-key-values");
@@ -441,9 +573,12 @@ export function redactSensitiveReadContent(
 	if (secretPatternResult.redactionCount > 0) {
 		reasons.push("secret-patterns");
 	}
+	if (encodedSecretResult.redactionCount > 0) {
+		reasons.push("encoded-secret-patterns");
+	}
 
 	return {
-		content: secretPatternResult.content,
+		content: encodedSecretResult.content,
 		redacted: redactionCount > 0,
 		redactionCount,
 		reasons,

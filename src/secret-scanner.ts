@@ -1,4 +1,12 @@
+import { createHash } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+
 import { SECRET_PATTERNS } from "./constants.js";
+import {
+	isCodeReferenceValue,
+	NON_SECRET_VALUES,
+	stripValueSyntax,
+} from "./shared/index.js";
 import type { SecretFinding, SecretSeverity } from "./types.js";
 
 const SEVERITY_ORDER: Record<SecretSeverity, number> = {
@@ -13,28 +21,89 @@ const ASSIGNMENT_FINDING_NAMES = new Set([
 	"Token Assignment",
 	"Sensitive Credential Assignment",
 ]);
-const CODE_REFERENCE_VALUE_PATTERN = /^(?:process\.env\.|import\.meta\.env\.)?[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/;
 const TEST_FIXTURE_PATH_PATTERN = /(?:^|[\\/._-])(?:__tests__|tests?|specs?|fixtures?|mocks?|samples?|examples?)(?:[\\/._-]|$)/i;
 const PLACEHOLDER_SECRET_WORD_PATTERN = /(?:^|[-_.])(?:test|fake|mock|dummy|fixture|sample|example|synthetic|placeholder|stale)(?:[-_.]|$)/i;
 const HUMAN_READABLE_FIXTURE_VALUE_PATTERN = /^[a-z0-9]+(?:[-_.][a-z0-9]+)+$/;
-const NON_SECRET_ASSIGNMENT_VALUES = new Set([
-	"boolean",
-	"false",
-	"null",
-	"number",
-	"object",
-	"private",
-	"protected",
-	"public",
-	"string",
-	"true",
-	"undefined",
-	"unknown",
-	"void",
-]);
 
 export interface SecretScanOptions {
 	file?: string;
+}
+
+export interface CachedSecretScanResult {
+	findings: SecretFinding[];
+}
+
+export interface SecretScanCacheStats {
+	hits: number;
+	misses: number;
+	size: number;
+}
+
+interface SecretScanCacheEntry {
+	mtimeMs: number;
+	size: number;
+	contentHash: string;
+	findings: SecretFinding[];
+}
+
+let scanCacheHits = 0;
+let scanCacheMisses = 0;
+const scanCache = new Map<string, SecretScanCacheEntry>();
+
+function cloneFindings(findings: SecretFinding[]): SecretFinding[] {
+	return findings.map((finding) => ({ ...finding }));
+}
+
+function createScanCacheKey(filePath: string, maxFindings: number): string {
+	return `${filePath}\u0000${maxFindings}`;
+}
+
+function hashContent(content: string): string {
+	return createHash("sha256").update(content).digest("hex");
+}
+
+export function resetScanCache(): void {
+	scanCache.clear();
+	scanCacheHits = 0;
+	scanCacheMisses = 0;
+}
+
+export function getScanCacheStats(): SecretScanCacheStats {
+	return {
+		hits: scanCacheHits,
+		misses: scanCacheMisses,
+		size: scanCache.size,
+	};
+}
+
+export function scanFileForSecretsCached(
+	filePath: string,
+	maxFindings: number,
+): CachedSecretScanResult {
+	const stats = statSync(filePath);
+	const content = readFileSync(filePath, "utf-8");
+	const contentHash = hashContent(content);
+	const cacheKey = createScanCacheKey(filePath, maxFindings);
+	const cached = scanCache.get(cacheKey);
+	if (
+		cached &&
+		cached.mtimeMs === stats.mtimeMs &&
+		cached.size === stats.size &&
+		cached.contentHash === contentHash
+	) {
+		scanCacheHits += 1;
+		return { findings: cloneFindings(cached.findings) };
+	}
+
+	scanCacheMisses += 1;
+	const findings = scanContentForSecrets(content, maxFindings, { file: filePath });
+	scanCache.set(cacheKey, {
+		mtimeMs: stats.mtimeMs,
+		size: stats.size,
+		contentHash,
+		findings: cloneFindings(findings),
+	});
+	return { findings };
 }
 
 function sanitizeSnippet(snippet: string): string {
@@ -77,19 +146,6 @@ function createFinding(
 	};
 }
 
-function stripAssignmentValueSyntax(matchText: string): string {
-	let value = matchText.trim().replace(/[;,]+$/g, "").trim();
-	const quote = value[0];
-	if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
-		value = value.slice(1, -1).trim();
-	}
-	return value;
-}
-
-function isCodeReferenceValue(matchText: string): boolean {
-	return CODE_REFERENCE_VALUE_PATTERN.test(stripAssignmentValueSyntax(matchText));
-}
-
 function isTestFixturePath(file: string | undefined): boolean {
 	return typeof file === "string" && TEST_FIXTURE_PATH_PATTERN.test(file);
 }
@@ -121,11 +177,11 @@ function shouldIgnoreAssignmentFinding(
 		return false;
 	}
 
-	const value = stripAssignmentValueSyntax(matchText);
+	const value = stripValueSyntax(matchText);
 	return (
 		!value ||
-		NON_SECRET_ASSIGNMENT_VALUES.has(value.toLowerCase()) ||
-		isCodeReferenceValue(value) ||
+		NON_SECRET_VALUES.has(value.toLowerCase()) ||
+		isCodeReferenceValue(matchText) ||
 		isFixtureAssignmentValue(value, options.file)
 	);
 }
@@ -137,6 +193,55 @@ export function severityAtOrAbove(
 	return SEVERITY_ORDER[severity] >= SEVERITY_ORDER[threshold];
 }
 
+function findFirstSecretInLine(
+	lineContent: string,
+	lineNumber: number,
+	file: string | undefined,
+	options: SecretScanOptions,
+): SecretFinding | undefined {
+	for (const pattern of SECRET_PATTERNS) {
+		const match = lineContent.match(pattern.pattern);
+		if (!match) {
+			continue;
+		}
+
+		const matchText = selectSecretMatchText(match, pattern.secretGroup);
+		if (shouldIgnoreAssignmentFinding(pattern.name, matchText, options)) {
+			continue;
+		}
+
+		return createFinding(
+			lineContent,
+			matchText,
+			pattern.name,
+			pattern.severity,
+			lineNumber,
+			file,
+		);
+	}
+	return undefined;
+}
+
+function scanLinesForSecrets(
+	lines: string[],
+	maxFindings: number,
+	processLine: (line: string, index: number) => SecretFinding | undefined,
+): SecretFinding[] {
+	const findings: SecretFinding[] = [];
+	for (let index = 0; index < lines.length; index += 1) {
+		const line = lines[index] ?? "";
+		const finding = processLine(line, index);
+		if (finding) {
+			findings.push(finding);
+		}
+
+		if (findings.length >= maxFindings) {
+			break;
+		}
+	}
+	return findings;
+}
+
 export function scanContentForSecrets(
 	content: string,
 	maxFindings: number,
@@ -146,41 +251,11 @@ export function scanContentForSecrets(
 		return [];
 	}
 
-	const findings: SecretFinding[] = [];
 	const lines = content.split(/\r?\n/);
 
-	for (let index = 0; index < lines.length; index += 1) {
-		const line = lines[index] ?? "";
-		for (const pattern of SECRET_PATTERNS) {
-			const match = line.match(pattern.pattern);
-			if (!match) {
-				continue;
-			}
-
-			const matchText = selectSecretMatchText(match, pattern.secretGroup);
-			if (shouldIgnoreAssignmentFinding(pattern.name, matchText, options)) {
-				continue;
-			}
-
-			findings.push(
-				createFinding(
-					line,
-					matchText,
-					pattern.name,
-					pattern.severity,
-					index + 1,
-					options.file,
-				),
-			);
-			break;
-		}
-
-		if (findings.length >= maxFindings) {
-			break;
-		}
-	}
-
-	return findings;
+	return scanLinesForSecrets(lines, maxFindings, (line, index) =>
+		findFirstSecretInLine(line, index + 1, options.file, options),
+	);
 }
 
 export function scanDiffForSecrets(
@@ -191,52 +266,21 @@ export function scanDiffForSecrets(
 		return [];
 	}
 
-	const findings: SecretFinding[] = [];
 	const lines = diff.split(/\r?\n/);
 	let currentFile: string | undefined;
 
-	for (let index = 0; index < lines.length; index += 1) {
-		const line = lines[index] ?? "";
+	return scanLinesForSecrets(lines, maxFindings, (line, index) => {
 		if (line.startsWith("+++ b/")) {
 			currentFile = line.slice(6);
-			continue;
+			return undefined;
 		}
 
 		if (!line.startsWith("+") || line.startsWith("+++")) {
-			continue;
+			return undefined;
 		}
 
-		const content = line.slice(1);
-		for (const pattern of SECRET_PATTERNS) {
-			const match = content.match(pattern.pattern);
-			if (!match) {
-				continue;
-			}
-
-			const matchText = selectSecretMatchText(match, pattern.secretGroup);
-			if (shouldIgnoreAssignmentFinding(pattern.name, matchText, { file: currentFile })) {
-				continue;
-			}
-
-			findings.push(
-				createFinding(
-					content,
-					matchText,
-					pattern.name,
-					pattern.severity,
-					index + 1,
-					currentFile,
-				),
-			);
-			break;
-		}
-
-		if (findings.length >= maxFindings) {
-			break;
-		}
-	}
-
-	return findings;
+		return findFirstSecretInLine(line.slice(1), index + 1, currentFile, { file: currentFile });
+	});
 }
 
 export function getBlockableSecretFindings(
