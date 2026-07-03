@@ -10,9 +10,11 @@ import { DEFAULT_CONFIG, PRIMARY_CONFIG_PATH } from "../src/constants.js";
 import { normalizeSensitiveGuardConfig } from "../src/config.js";
 import sensitiveGuardExtension from "../src/index.js";
 import {
+	__setPiNativeEditDiffModuleLoaderForTest,
 	evaluateProtectedFileEditInput,
 	evaluateProtectedFileEdits,
 	evaluateProtectedFileWrite,
+	PI_NATIVE_EDIT_DIFF_FALLBACK_NOTE,
 } from "../src/protected-file-edits.js";
 import type { ResolvedSensitiveGuardConfig } from "../src/types.js";
 
@@ -194,6 +196,64 @@ test("allows protected file edits accepted by Pi native fuzzy matching", async (
 	);
 
 	assert.equal(result.allowed, true);
+});
+
+test("documents the Pi v0.79.7 native edit-diff export limitation without terminal logging", () => {
+	assert.match(PI_NATIVE_EDIT_DIFF_FALLBACK_NOTE, /v0\.79\.7/);
+	assert.match(PI_NATIVE_EDIT_DIFF_FALLBACK_NOTE, /not publicly export normalizeToLF/);
+	assert.match(PI_NATIVE_EDIT_DIFF_FALLBACK_NOTE, /fallback/i);
+});
+
+test("falls back to exact text replacements when the Pi native edit-diff module is invalid", async () => {
+	__setPiNativeEditDiffModuleLoaderForTest(async () => ({
+		normalizeToLF: (text: string) => text,
+	}));
+
+	try {
+		const result = await evaluateProtectedFileEditInput(
+			"MAX_CONCURRENT_REQUESTS=1\n",
+			{
+				path: "secrets.env",
+				edits: [
+					{
+						oldText: "MAX_CONCURRENT_REQUESTS=1",
+						newText: "MAX_CONCURRENT_REQUESTS=2",
+					},
+				],
+			},
+			createConfig(),
+		);
+
+		assert.equal(result.allowed, true);
+	} finally {
+		__setPiNativeEditDiffModuleLoaderForTest(undefined);
+	}
+});
+
+test("falls back to exact text replacements when the Pi native edit-diff module is missing", async () => {
+	__setPiNativeEditDiffModuleLoaderForTest(async () => {
+		throw new Error("simulated missing internal edit-diff module");
+	});
+
+	try {
+		const result = await evaluateProtectedFileEditInput(
+			"MAX_CONCURRENT_REQUESTS=1\n",
+			{
+				path: "secrets.env",
+				edits: [
+					{
+						oldText: "MAX_CONCURRENT_REQUESTS=1",
+						newText: "MAX_CONCURRENT_REQUESTS=2",
+					},
+				],
+			},
+			createConfig(),
+		);
+
+		assert.equal(result.allowed, true);
+	} finally {
+		__setPiNativeEditDiffModuleLoaderForTest(undefined);
+	}
 });
 
 test("allows structured anchored protected file edits after applying them to current content", async () => {
