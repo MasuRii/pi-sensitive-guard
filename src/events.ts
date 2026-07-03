@@ -5,6 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { BLOCKED_EVENT_CHANNEL } from "./constants.js";
 import { redactSensitiveReadContent } from "./read-redactor.js";
+import { describeError, safeJsonStringify } from "./shared/index.js";
 import type {
 	ResolvedSensitiveGuardConfig,
 	SensitiveGuardBlockedEvent,
@@ -13,16 +14,11 @@ import type {
 let blockedEventLogQueue: Promise<void> = Promise.resolve();
 
 function enqueueBlockedEventLog(logPath: string, line: string): void {
-	blockedEventLogQueue = blockedEventLogQueue.then(
-		async () => {
-			await mkdir(dirname(logPath), { recursive: true });
-			await appendFile(logPath, `${line}\n`, "utf-8");
-		},
-		async () => {
-			await mkdir(dirname(logPath), { recursive: true });
-			await appendFile(logPath, `${line}\n`, "utf-8");
-		},
-	);
+	const writeLogEntry = async () => {
+		await mkdir(dirname(logPath), { recursive: true });
+		await appendFile(logPath, `${line}\n`, "utf-8");
+	};
+	blockedEventLogQueue = blockedEventLogQueue.then(writeLogEntry, writeLogEntry);
 	void blockedEventLogQueue.catch(() => {
 		// Blocked-event logging must never affect sensitive guard enforcement.
 	});
@@ -30,32 +26,6 @@ function enqueueBlockedEventLog(logPath: string, line: string): void {
 
 export function flushBlockedEventLog(): Promise<void> {
 	return blockedEventLogQueue.catch(() => undefined);
-}
-
-function safeJsonStringify(value: unknown): string {
-	const seen = new WeakSet<object>();
-	return JSON.stringify(value, (_key, currentValue) => {
-		if (currentValue instanceof Error) {
-			return {
-				name: currentValue.name,
-				message: currentValue.message,
-				stack: currentValue.stack,
-			};
-		}
-
-		if (typeof currentValue === "bigint") {
-			return currentValue.toString();
-		}
-
-		if (typeof currentValue === "object" && currentValue !== null) {
-			if (seen.has(currentValue)) {
-				return "[Circular]";
-			}
-			seen.add(currentValue);
-		}
-
-		return currentValue;
-	});
 }
 
 function redactEventString(
@@ -127,7 +97,7 @@ export function emitBlocked(
 
 		return undefined;
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		const message = describeError(error);
 		return `Failed to record blocked sensitive-guard event: ${message}`;
 	}
 }

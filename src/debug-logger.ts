@@ -1,49 +1,12 @@
-import { mkdirSync } from "node:fs";
-
 import { DEBUG_DIR, DEBUG_LOG_PATH, EXTENSION_NAME } from "./constants.js";
 import { AsyncBufferedLogWriter } from "./async-buffered-log-writer.js";
+import { describeError, ensureDirectory, safeJsonStringify } from "./shared/index.js";
 
 export type SensitiveGuardDebugLogLevel = "info" | "warn";
 
 export interface SensitiveGuardDebugLoggerOptions {
 	debugDir?: string;
 	logPath?: string;
-}
-
-function safeJsonStringify(value: unknown): string {
-	const seen = new WeakSet<object>();
-	return JSON.stringify(value, (_key, currentValue) => {
-		if (currentValue instanceof Error) {
-			return {
-				name: currentValue.name,
-				message: currentValue.message,
-				stack: currentValue.stack,
-			};
-		}
-
-		if (typeof currentValue === "bigint") {
-			return currentValue.toString();
-		}
-
-		if (typeof currentValue === "object" && currentValue !== null) {
-			if (seen.has(currentValue)) {
-				return "[Circular]";
-			}
-			seen.add(currentValue);
-		}
-
-		return currentValue;
-	});
-}
-
-function ensureDebugDirectory(debugDir: string): string | undefined {
-	try {
-		mkdirSync(debugDir, { recursive: true });
-		return undefined;
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		return `Failed to create ${debugDir}: ${message}`;
-	}
 }
 
 export class SensitiveGuardDebugLogger {
@@ -54,7 +17,7 @@ export class SensitiveGuardDebugLogger {
 		this.writer = new AsyncBufferedLogWriter({
 			enabled: false,
 			logPath: this.options.logPath ?? DEBUG_LOG_PATH,
-			ensureDirectory: () => ensureDebugDirectory(debugDir),
+			ensureDirectory: () => ensureDirectory(debugDir, debugDir),
 			createDroppedEntriesLine: (droppedEntries) =>
 				`${safeJsonStringify({
 					timestamp: new Date().toISOString(),
@@ -86,7 +49,7 @@ export class SensitiveGuardDebugLogger {
 				})}\n`,
 			);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const message = describeError(error);
 			return `Failed to buffer ${EXTENSION_NAME} ${level} debug log '${this.options.logPath ?? DEBUG_LOG_PATH}': ${message}`;
 		}
 	}

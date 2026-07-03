@@ -39,25 +39,25 @@ export class AsyncBufferedLogWriter {
 
 	constructor(private readonly options: AsyncBufferedLogWriterOptions) {
 		this.enabled = options.enabled;
-		this.flushIntervalMs = normalizePositiveInteger(
+		this.flushIntervalMs = clampPositiveInteger(
 			options.flushIntervalMs,
 			DEFAULT_FLUSH_INTERVAL_MS,
 		);
-		this.flushEntryLimit = normalizePositiveInteger(
+		this.flushEntryLimit = clampPositiveInteger(
 			options.flushEntryLimit,
 			DEFAULT_FLUSH_ENTRY_LIMIT,
 		);
-		this.flushByteLimit = normalizePositiveInteger(
+		this.flushByteLimit = clampPositiveInteger(
 			options.flushByteLimit,
 			DEFAULT_FLUSH_BYTE_LIMIT,
 		);
 		this.maxBufferedEntries = Math.max(
 			this.flushEntryLimit,
-			normalizePositiveInteger(options.maxBufferedEntries, DEFAULT_MAX_BUFFERED_ENTRIES),
+			clampPositiveInteger(options.maxBufferedEntries, DEFAULT_MAX_BUFFERED_ENTRIES),
 		);
 		this.maxBufferedBytes = Math.max(
 			this.flushByteLimit,
-			normalizePositiveInteger(options.maxBufferedBytes, DEFAULT_MAX_BUFFERED_BYTES),
+			clampPositiveInteger(options.maxBufferedBytes, DEFAULT_MAX_BUFFERED_BYTES),
 		);
 		this.createDroppedEntriesLine = options.createDroppedEntriesLine;
 	}
@@ -255,7 +255,7 @@ export class AsyncBufferedLogWriter {
 	}
 }
 
-function normalizePositiveInteger(value: number | undefined, fallback: number): number {
+function clampPositiveInteger(value: number | undefined, fallback: number): number {
 	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
 		return fallback;
 	}

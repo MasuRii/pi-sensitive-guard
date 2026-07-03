@@ -1,5 +1,6 @@
-import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
+
+import { describeError, ensureDirectory } from "./shared/index.js";
 
 const RETRIABLE_IMPORT_ERROR_CODES = new Set([
 	"ENOENT",
@@ -20,16 +21,8 @@ export function isRetriableImportError(error: unknown): boolean {
 		}
 	}
 
-	const message = error instanceof Error ? error.message : String(error);
+	const message = describeError(error);
 	return /no such file or directory/i.test(message);
-}
-
-function ensureJitiFallbackDir(): void {
-	try {
-		mkdirSync(`${tmpdir()}/jiti`, { recursive: true });
-	} catch {
-		// Ignore; the runtime loader is responsible for its own cache directory.
-	}
 }
 
 export interface ModuleCache<T> {
@@ -60,7 +53,7 @@ export async function tryImportWithRetry<T>(
 				throw error;
 			}
 
-			ensureJitiFallbackDir();
+			ensureDirectory(`${tmpdir()}/jiti`, "jiti fallback dir");
 			await new Promise((resolve) => {
 				setTimeout(resolve, 50 * attempt);
 			});

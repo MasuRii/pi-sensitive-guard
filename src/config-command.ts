@@ -12,6 +12,8 @@ import {
 	EXTENSION_NAME,
 	PRIMARY_CONFIG_PATH,
 } from "./constants.js";
+import { describeError, toRecord } from "./shared/index.js";
+import { getSensitiveGuardConfigCompletions } from "./shared/command-completions.js";
 import type {
 	ReadRedactionScope,
 	ResolvedSensitiveGuardConfig,
@@ -33,12 +35,6 @@ interface MenuItem {
 
 const READ_REDACTION_SCOPES: ReadRedactionScope[] = ["protectedOnly", "allOutput"];
 const SECRET_SEVERITIES: SecretSeverity[] = ["critical", "high", "medium"];
-
-function toObject(value: unknown): RuntimeConfig {
-	return value && typeof value === "object" && !Array.isArray(value)
-		? (value as RuntimeConfig)
-		: {};
-}
 
 function getNestedObject(config: RuntimeConfig, key: string): RuntimeConfig {
 	const current = config[key];
@@ -95,9 +91,9 @@ function readRuntimeConfig(): { config?: RuntimeConfig; error?: string } {
 		}
 
 		const parsed = JSON.parse(readFileSync(PRIMARY_CONFIG_PATH, "utf-8")) as unknown;
-		return { config: toObject(parsed) };
+		return { config: toRecord(parsed) };
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		const message = describeError(error);
 		return { error: `Failed to read ${PRIMARY_CONFIG_PATH}: ${message}` };
 	}
 }
@@ -114,7 +110,7 @@ function writeRuntimeConfig(mutator: RuntimeConfigMutator): string | undefined {
 		writeFileSync(PRIMARY_CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
 		return undefined;
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		const message = describeError(error);
 		return `Failed to write ${PRIMARY_CONFIG_PATH}: ${message}`;
 	}
 }
@@ -265,7 +261,7 @@ async function editRawConfig(
 	try {
 		JSON.parse(edited);
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		const message = describeError(error);
 		ctx.ui.notify(`${EXTENSION_NAME}: invalid JSON: ${message}`, "error");
 		return;
 	}
@@ -273,7 +269,7 @@ async function editRawConfig(
 	try {
 		writeFileSync(PRIMARY_CONFIG_PATH, edited.endsWith("\n") ? edited : `${edited}\n`, "utf-8");
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		const message = describeError(error);
 		ctx.ui.notify(`${EXTENSION_NAME}: failed to save config: ${message}`, "error");
 		return;
 	}
@@ -486,10 +482,7 @@ async function openConfigMenu(
 }
 
 export function getSensitiveGuardConfigCommandCompletions(prefix: string): { value: string; label: string }[] | null {
-	const completions = ["status", "edit"].filter((entry) => entry.startsWith(prefix));
-	return completions.length > 0
-		? completions.map((value) => ({ value, label: value }))
-		: null;
+	return getSensitiveGuardConfigCompletions(prefix);
 }
 
 export async function runSensitiveGuardConfigCommand(

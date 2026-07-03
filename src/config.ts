@@ -9,7 +9,9 @@ import {
 	DEFAULT_SAFE_PATTERN_CONFIGS,
 	DEFAULT_SENSITIVE_KEY_PATTERN_CONFIGS,
 	PRIMARY_CONFIG_PATH,
+	PROJECT_CONFIG_FILENAME,
 } from "./constants.js";
+import { describeError, toRecord } from "./shared/index.js";
 import type {
 	BlockedEventsConfig,
 	ConfigLoadResult,
@@ -27,14 +29,6 @@ import type {
 	SecretSeverity,
 } from "./types.js";
 
-function toObject(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return {};
-	}
-
-	return value as Record<string, unknown>;
-}
-
 function clonePatternList(patterns: PatternConfig[]): PatternConfig[] {
 	return patterns.map((pattern) => ({ ...pattern }));
 }
@@ -43,15 +37,19 @@ function cloneResolvedConfig(config: ResolvedSensitiveGuardConfig): ResolvedSens
 	return JSON.parse(JSON.stringify(config)) as ResolvedSensitiveGuardConfig;
 }
 
+function cloneRule(rule: ResolvedProtectionRule): ResolvedProtectionRule {
+	return {
+		...rule,
+		patterns: clonePatternList(rule.patterns),
+		allowedPatterns: clonePatternList(rule.allowedPatterns),
+	};
+}
+
 function cloneDefaultConfig(): ResolvedSensitiveGuardConfig {
 	return {
 		version: DEFAULT_CONFIG.version,
 		enabled: DEFAULT_CONFIG.enabled,
-		rules: DEFAULT_CONFIG.rules.map((rule) => ({
-			...rule,
-			patterns: clonePatternList(rule.patterns),
-			allowedPatterns: clonePatternList(rule.allowedPatterns),
-		})),
+		rules: DEFAULT_CONFIG.rules.map(cloneRule),
 		gitProtection: { ...DEFAULT_CONFIG.gitProtection },
 		contentScanning: { ...DEFAULT_CONFIG.contentScanning },
 		blockedEvents: { ...DEFAULT_CONFIG.blockedEvents },
@@ -131,24 +129,44 @@ function normalizeVersion(value: unknown, warnings: string[]): number {
 	return DEFAULT_CONFIG.version;
 }
 
+function normalizeEnumValue<T extends string>(
+	value: unknown,
+	fallback: T,
+	allowed: readonly T[],
+	path: string,
+	warnings: string[],
+): T {
+	if (value === undefined) {
+		return fallback;
+	}
+
+	for (const option of allowed) {
+		if (value === option) {
+			return option;
+		}
+	}
+
+	warnings.push(
+		`Invalid config value '${path}': expected one of ${allowed
+			.map((v) => `'${v}'`)
+			.join(", ")}.`,
+	);
+	return fallback;
+}
+
 function normalizeProtectionLevel(
 	value: unknown,
 	fallback: ProtectionLevel,
 	path: string,
 	warnings: string[],
 ): ProtectionLevel {
-	if (value === undefined) {
-		return fallback;
-	}
-
-	if (value === "none" || value === "readOnly" || value === "noAccess") {
-		return value;
-	}
-
-	warnings.push(
-		`Invalid config value '${path}': expected one of 'none', 'readOnly', or 'noAccess'.`,
+	return normalizeEnumValue(
+		value,
+		fallback,
+		["none", "readOnly", "noAccess"] as const,
+		path,
+		warnings,
 	);
-	return fallback;
 }
 
 function normalizeSeverity(
@@ -157,18 +175,13 @@ function normalizeSeverity(
 	path: string,
 	warnings: string[],
 ): SecretSeverity {
-	if (value === undefined) {
-		return fallback;
-	}
-
-	if (value === "critical" || value === "high" || value === "medium") {
-		return value;
-	}
-
-	warnings.push(
-		`Invalid config value '${path}': expected one of 'critical', 'high', or 'medium'.`,
+	return normalizeEnumValue(
+		value,
+		fallback,
+		["critical", "high", "medium"] as const,
+		path,
+		warnings,
 	);
-	return fallback;
 }
 
 function normalizeReadRedactionScope(
@@ -177,18 +190,13 @@ function normalizeReadRedactionScope(
 	path: string,
 	warnings: string[],
 ): ReadRedactionScope {
-	if (value === undefined) {
-		return fallback;
-	}
-
-	if (value === "protectedOnly" || value === "allOutput") {
-		return value;
-	}
-
-	warnings.push(
-		`Invalid config value '${path}': expected one of 'protectedOnly' or 'allOutput'.`,
+	return normalizeEnumValue(
+		value,
+		fallback,
+		["protectedOnly", "allOutput"] as const,
+		path,
+		warnings,
 	);
-	return fallback;
 }
 
 function normalizePatternConfig(
@@ -207,7 +215,7 @@ function normalizePatternConfig(
 		return legacyStringIsRegex ? { pattern: trimmed, regex: true } : { pattern: trimmed };
 	}
 
-	const record = toObject(value);
+	const record = toRecord(value);
 	const pattern = normalizeString(record.pattern);
 	if (!pattern) {
 		warnings.push(`Invalid config value '${path}.pattern': expected a non-empty string.`);
@@ -258,7 +266,7 @@ function normalizeRule(
 	index: number,
 	warnings: string[],
 ): ResolvedProtectionRule | null {
-	const record = toObject(value);
+	const record = toRecord(value);
 	const id = normalizeString(record.id);
 	if (!id) {
 		warnings.push(`Invalid config value 'rules[${index}].id': expected a non-empty string.`);
@@ -350,7 +358,7 @@ function normalizeGitProtection(
 	value: unknown,
 	warnings: string[],
 ): ResolvedSensitiveGuardConfig["gitProtection"] {
-	const record = toObject(value) as GitProtectionConfig;
+	const record = toRecord(value) as GitProtectionConfig;
 	return {
 		enabled: normalizeBoolean(
 			record.enabled,
@@ -389,7 +397,7 @@ function normalizeContentScanning(
 	value: unknown,
 	warnings: string[],
 ): ResolvedSensitiveGuardConfig["contentScanning"] {
-	const record = toObject(value) as ContentScanningConfig;
+	const record = toRecord(value) as ContentScanningConfig;
 	return {
 		enabled: normalizeBoolean(
 			record.enabled,
@@ -416,7 +424,7 @@ function normalizeBlockedEvents(
 	value: unknown,
 	warnings: string[],
 ): ResolvedSensitiveGuardConfig["blockedEvents"] {
-	const record = toObject(value) as BlockedEventsConfig;
+	const record = toRecord(value) as BlockedEventsConfig;
 	const configuredPath = normalizeString(record.logPath);
 	return {
 		emit: normalizeBoolean(
@@ -441,7 +449,7 @@ function normalizeReadRedaction(
 	value: unknown,
 	warnings: string[],
 ): ResolvedSensitiveGuardConfig["readRedaction"] {
-	const record = toObject(value) as ReadRedactionConfig;
+	const record = toRecord(value) as ReadRedactionConfig;
 	const configuredPlaceholder = normalizeString(record.placeholder);
 	const configuredPatterns = normalizePatternList(
 		record.sensitiveKeyPatterns,
@@ -492,7 +500,7 @@ function normalizeProtectedFileEdits(
 	value: unknown,
 	warnings: string[],
 ): ResolvedSensitiveGuardConfig["protectedFileEdits"] {
-	const record = toObject(value) as ProtectedFileEditsConfig;
+	const record = toRecord(value) as ProtectedFileEditsConfig;
 	return {
 		enabled: normalizeBoolean(
 			record.enabled,
@@ -508,7 +516,7 @@ export function normalizeSensitiveGuardConfig(raw: unknown): {
 	warnings: string[];
 } {
 	const warnings: string[] = [];
-	const source = toObject(raw) as SensitiveGuardConfig & Record<string, unknown>;
+	const source = toRecord(raw) as SensitiveGuardConfig & Record<string, unknown>;
 
 	const legacyProtectedPatterns = normalizePatternList(
 		source.PROTECTED_PATTERNS ?? source.protectedPatterns,
@@ -566,6 +574,70 @@ function parseConfigFromPath(path: string): {
 	return normalizeSensitiveGuardConfig(parsed);
 }
 
+function readConfigInput(input: unknown): unknown {
+	if (typeof input !== "string") {
+		return input;
+	}
+
+	const fileContent = readFileSync(input, "utf-8");
+	return JSON.parse(fileContent) as unknown;
+}
+
+function mergeRuleLists(
+	globalRules: ResolvedProtectionRule[],
+	projectRules: ResolvedProtectionRule[],
+): ResolvedProtectionRule[] {
+	const rulesById = new Map<string, ResolvedProtectionRule>();
+	for (const rule of globalRules) {
+		rulesById.set(rule.id, rule);
+	}
+	for (const rule of projectRules) {
+		rulesById.set(rule.id, rule);
+	}
+	return [...rulesById.values()].map(cloneRule);
+}
+
+export function mergeSensitiveGuardConfigs(
+	globalConfigInput: unknown,
+	projectConfigInput: unknown,
+): ResolvedSensitiveGuardConfig {
+	const globalConfig = normalizeSensitiveGuardConfig(readConfigInput(globalConfigInput)).config;
+	const rawProjectConfig = readConfigInput(projectConfigInput);
+	const projectRecord = toRecord(rawProjectConfig);
+	const projectConfig = normalizeSensitiveGuardConfig(rawProjectConfig).config;
+	const merged = cloneResolvedConfig(globalConfig);
+
+	if (Object.hasOwn(projectRecord, "enabled")) {
+		merged.enabled = globalConfig.enabled || projectConfig.enabled;
+	}
+	if (Object.hasOwn(projectRecord, "rules")) {
+		merged.rules = mergeRuleLists(globalConfig.rules, projectConfig.rules);
+	}
+	if (Object.hasOwn(projectRecord, "gitProtection")) {
+		merged.gitProtection = { ...projectConfig.gitProtection };
+	}
+	if (Object.hasOwn(projectRecord, "contentScanning")) {
+		merged.contentScanning = { ...projectConfig.contentScanning };
+	}
+	if (Object.hasOwn(projectRecord, "blockedEvents")) {
+		merged.blockedEvents = { ...projectConfig.blockedEvents };
+	}
+	if (Object.hasOwn(projectRecord, "readRedaction")) {
+		merged.readRedaction = {
+			...projectConfig.readRedaction,
+			sensitiveKeyPatterns: clonePatternList(projectConfig.readRedaction.sensitiveKeyPatterns),
+		};
+	}
+	if (Object.hasOwn(projectRecord, "protectedFileEdits")) {
+		merged.protectedFileEdits = { ...projectConfig.protectedFileEdits };
+	}
+	if (Object.hasOwn(projectRecord, "debug")) {
+		merged.debug = projectConfig.debug;
+	}
+
+	return merged;
+}
+
 let cachedLoadResult: ConfigLoadResult | undefined;
 let cachedLoadFingerprint: string | undefined;
 
@@ -596,7 +668,7 @@ export function ensureConfigExists(): EnsureConfigResult {
 		writeFileSync(PRIMARY_CONFIG_PATH, DEFAULT_CONFIG_CONTENT, "utf-8");
 		return { created: true };
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		const message = describeError(error);
 		return {
 			created: false,
 			error: `Failed to create ${PRIMARY_CONFIG_PATH}: ${message}`,
@@ -632,14 +704,88 @@ export function loadConfig(): ConfigLoadResult {
 		cachedLoadResult = cloneLoadResult(result);
 		return result;
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
 		const result: ConfigLoadResult = {
 			config: cloneDefaultConfig(),
 			source: "fallback",
-			warnings: [`Failed to load ${PRIMARY_CONFIG_PATH}: ${message}`],
+			warnings: [`Failed to load ${PRIMARY_CONFIG_PATH}: ${describeError(error)}`],
 		};
 		cachedLoadFingerprint = fingerprint;
 		cachedLoadResult = cloneLoadResult(result);
+		return result;
+	}
+}
+
+let cachedProjectConfigPath: string | undefined;
+let cachedMergedFingerprint: string | undefined;
+let cachedMergedResult: ConfigLoadResult | undefined;
+
+/**
+ * Resolves the project-local config path for a given workspace directory. Returns
+ * `undefined` when no project-local config file exists at the expected location.
+ */
+export function resolveProjectConfigPath(workspaceDir: string): string | undefined {
+	const projectConfigPath = resolve(workspaceDir, PROJECT_CONFIG_FILENAME);
+	return existsSync(projectConfigPath) ? projectConfigPath : undefined;
+}
+
+/**
+ * Loads the global config and, when a project-local config exists at
+ * `workspaceDir`, merges it on top via {@link mergeSensitiveGuardConfigs}.
+ * The merged result is cached by a combined fingerprint of the global and
+ * project config file stats.
+ */
+export function loadMergedConfig(workspaceDir: string): ConfigLoadResult {
+	const globalResult = loadConfig();
+	const projectConfigPath = resolveProjectConfigPath(workspaceDir);
+
+	if (!projectConfigPath) {
+		return globalResult;
+	}
+
+	const projectFingerprint = (() => {
+		try {
+			const stats = statSync(projectConfigPath);
+			return `${projectConfigPath}:${stats.mtimeMs}:${stats.size}`;
+		} catch {
+			return "missing";
+		}
+	})();
+	const fingerprint = `${globalResult.source}:${globalResult.path}:${getPrimaryConfigFingerprint()}|${projectFingerprint}`;
+
+	if (
+		cachedMergedResult &&
+		cachedProjectConfigPath === projectConfigPath &&
+		cachedMergedFingerprint === fingerprint
+	) {
+		return cloneLoadResult(cachedMergedResult);
+	}
+
+	try {
+		const mergedConfig = mergeSensitiveGuardConfigs(globalResult.config, projectConfigPath);
+		const result: ConfigLoadResult = {
+			config: mergedConfig,
+			source: "merged",
+			path: projectConfigPath,
+			warnings: globalResult.warnings,
+		};
+		cachedProjectConfigPath = projectConfigPath;
+		cachedMergedFingerprint = fingerprint;
+		cachedMergedResult = cloneLoadResult(result);
+		return result;
+	} catch (error) {
+		const message = describeError(error);
+		const result: ConfigLoadResult = {
+			config: globalResult.config,
+			source: globalResult.source,
+			path: globalResult.path,
+			warnings: [
+				...globalResult.warnings,
+				`Failed to merge project config ${projectConfigPath}: ${message}`,
+			],
+		};
+		cachedProjectConfigPath = projectConfigPath;
+		cachedMergedFingerprint = fingerprint;
+		cachedMergedResult = cloneLoadResult(result);
 		return result;
 	}
 }
