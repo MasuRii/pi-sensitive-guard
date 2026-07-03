@@ -1,4 +1,5 @@
 import { redactSensitiveReadContent } from "./read-redactor.js";
+import { describeError, toRecord } from "./shared/index.js";
 import type { ResolvedSensitiveGuardConfig } from "./types.js";
 
 interface EditReplacement {
@@ -42,31 +43,46 @@ interface PiNativeEditDiffModule {
 	) => { baseContent: string; newContent: string };
 }
 
+type PiNativeEditDiffModuleLoader = () => Promise<unknown>;
+
 export interface ProtectedFileEditEvaluation {
 	allowed: boolean;
 	reason: string;
 }
 
+export const PI_NATIVE_EDIT_DIFF_FALLBACK_NOTE =
+	"Pi v0.79.7 does not publicly export normalizeToLF/applyEditsToNormalizedContent; " +
+	"pi-sensitive-guard probes @earendil-works/pi-coding-agent's internal core/tools/edit-diff.js module " +
+	"and uses a fallback to manual exact text replacement when the internal module is missing or invalid.";
+
 let piNativeEditDiffModulePromise: Promise<PiNativeEditDiffModule | undefined> | undefined;
+let piNativeEditDiffModuleLoader: PiNativeEditDiffModuleLoader = importPiNativeEditDiffModule;
 
 function resolvePiNativeEditDiffModuleUrl(): string {
 	const packageEntryUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
 	return new URL("./core/tools/edit-diff.js", packageEntryUrl).href;
 }
 
+async function importPiNativeEditDiffModule(): Promise<unknown> {
+	return import(resolvePiNativeEditDiffModuleUrl());
+}
+
+function isPiNativeEditDiffModule(module: unknown): module is PiNativeEditDiffModule {
+	const candidate = module as Partial<PiNativeEditDiffModule>;
+	return (
+		typeof candidate.normalizeToLF === "function" &&
+		typeof candidate.applyEditsToNormalizedContent === "function"
+	);
+}
+
+export function __setPiNativeEditDiffModuleLoaderForTest(loader?: PiNativeEditDiffModuleLoader): void {
+	piNativeEditDiffModulePromise = undefined;
+	piNativeEditDiffModuleLoader = loader ?? importPiNativeEditDiffModule;
+}
+
 async function loadPiNativeEditDiffModule(): Promise<PiNativeEditDiffModule | undefined> {
-	piNativeEditDiffModulePromise ??= Promise.resolve()
-		.then(() => import(resolvePiNativeEditDiffModuleUrl()))
-		.then((module: unknown) => {
-			const candidate = module as Partial<PiNativeEditDiffModule>;
-			if (
-				typeof candidate.normalizeToLF !== "function" ||
-				typeof candidate.applyEditsToNormalizedContent !== "function"
-			) {
-				return undefined;
-			}
-			return candidate as PiNativeEditDiffModule;
-		})
+	piNativeEditDiffModulePromise ??= piNativeEditDiffModuleLoader()
+		.then((module: unknown) => (isPiNativeEditDiffModule(module) ? module : undefined))
 		.catch(() => undefined);
 	return piNativeEditDiffModulePromise;
 }
@@ -106,7 +122,7 @@ async function applyPiNativeTextReplacements(
 		);
 		return { content: newContent, recognized: true };
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		const message = describeError(error);
 		return { content, recognized: true, error: normalizePiNativeEditError(message) };
 	}
 }
@@ -126,13 +142,6 @@ function splitLines(content: string): string[] {
 	return content.split(/\r?\n/);
 }
 
-
-function toRecord(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return {};
-	}
-	return value as Record<string, unknown>;
-}
 
 function normalizeExactText(text: string): string {
 	return text.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
@@ -242,70 +251,82 @@ function getReplacementLines(record: Record<string, unknown>): string[] | undefi
 	return undefined;
 }
 
+function buildAnchorEdit(
+	kind: "append" | "prepend",
+	record: Record<string, unknown>,
+): StructuredLineEdit | undefined {
+	const lines = getReplacementLines(record);
+	if (!lines) {
+		return undefined;
+	}
+	const anchor = parseAnchor(record.pos ?? record.anchor);
+	return anchor ? { kind, anchor, lines } : { kind, lines };
+}
+
+function buildSimpleReplaceEdit(record: Record<string, unknown>): StructuredLineEdit | undefined {
+	const start = parseAnchor(record.anchor ?? record.pos);
+	const lines = getReplacementLines(record);
+	return start && lines ? { kind: "replace", start, lines } : undefined;
+}
+
+function buildReplaceEdit(
+	record: Record<string, unknown>,
+	startAnchor: unknown,
+	endAnchor: unknown,
+): StructuredLineEdit | undefined {
+	const start = parseAnchor(startAnchor);
+	const lines = getReplacementLines(record);
+	if (!start || !lines) {
+		return undefined;
+	}
+	const end = parseAnchor(endAnchor);
+	return end ? { kind: "replace", start, end, lines } : { kind: "replace", start, lines };
+}
+
+function buildRangedReplaceEdit(record: Record<string, unknown>): StructuredLineEdit | undefined {
+	return buildReplaceEdit(
+		record,
+		record.start_anchor ?? record.pos ?? record.anchor,
+		record.end_anchor ?? record.end,
+	);
+}
+
 function parseStructuredLineEdit(edit: unknown): StructuredLineEdit | undefined {
 	const record = toRecord(edit);
 	const op = record.op;
 
 	if (op === "replace") {
-		const start = parseAnchor(record.pos ?? record.anchor ?? record.start_anchor);
-		const lines = getReplacementLines(record);
-		if (!start || !lines) {
-			return undefined;
-		}
-		const end = parseAnchor(record.end ?? record.end_anchor);
-		return end ? { kind: "replace", start, end, lines } : { kind: "replace", start, lines };
+		return buildReplaceEdit(
+			record,
+			record.pos ?? record.anchor ?? record.start_anchor,
+			record.end ?? record.end_anchor,
+		);
 	}
 
 	if (op === "append" || op === "insert_after") {
-		const lines = getReplacementLines(record);
-		if (!lines) {
-			return undefined;
-		}
-		const anchor = parseAnchor(record.pos ?? record.anchor);
-		return anchor ? { kind: "append", anchor, lines } : { kind: "append", lines };
+		return buildAnchorEdit("append", record);
 	}
 
 	if (op === "prepend") {
-		const lines = getReplacementLines(record);
-		if (!lines) {
-			return undefined;
-		}
-		const anchor = parseAnchor(record.pos ?? record.anchor);
-		return anchor ? { kind: "prepend", anchor, lines } : { kind: "prepend", lines };
+		return buildAnchorEdit("prepend", record);
 	}
 
 	if (op === "set_line") {
-		const start = parseAnchor(record.anchor ?? record.pos);
-		const lines = getReplacementLines(record);
-		return start && lines ? { kind: "replace", start, lines } : undefined;
+		return buildSimpleReplaceEdit(record);
 	}
 
 	if (op === "replace_lines") {
-		const start = parseAnchor(record.start_anchor ?? record.pos ?? record.anchor);
-		const lines = getReplacementLines(record);
-		if (!start || !lines) {
-			return undefined;
-		}
-		const end = parseAnchor(record.end_anchor ?? record.end);
-		return end ? { kind: "replace", start, end, lines } : { kind: "replace", start, lines };
+		return buildRangedReplaceEdit(record);
 	}
 
 	const setLine = toRecord(record.set_line);
 	if (Object.keys(setLine).length > 0) {
-		const start = parseAnchor(setLine.anchor ?? setLine.pos);
-		const lines = getReplacementLines(setLine);
-		return start && lines ? { kind: "replace", start, lines } : undefined;
+		return buildSimpleReplaceEdit(setLine);
 	}
 
 	const replaceLines = toRecord(record.replace_lines);
 	if (Object.keys(replaceLines).length > 0) {
-		const start = parseAnchor(replaceLines.start_anchor ?? replaceLines.pos ?? replaceLines.anchor);
-		const lines = getReplacementLines(replaceLines);
-		if (!start || !lines) {
-			return undefined;
-		}
-		const end = parseAnchor(replaceLines.end_anchor ?? replaceLines.end);
-		return end ? { kind: "replace", start, end, lines } : { kind: "replace", start, lines };
+		return buildRangedReplaceEdit(replaceLines);
 	}
 
 	const insertAfter = toRecord(record.insert_after);
@@ -371,9 +392,11 @@ function applyStructuredLineEdits(content: string, edits: StructuredLineEdit[]):
 	const operations: Array<{ start: number; deleteCount: number; lines: string[] }> = [];
 
 	for (const edit of edits) {
-		if (edit.kind === "append") {
+		if (edit.kind === "append" || edit.kind === "prepend") {
+			const defaultStart = edit.kind === "append" ? fileLines.length : 0;
+			const anchorOffset = edit.kind === "append" ? 1 : 0;
 			if (!edit.anchor) {
-				operations.push({ start: fileLines.length, deleteCount: 0, lines: edit.lines });
+				operations.push({ start: defaultStart, deleteCount: 0, lines: edit.lines });
 				continue;
 			}
 
@@ -381,21 +404,7 @@ function applyStructuredLineEdits(content: string, edits: StructuredLineEdit[]):
 			if (anchor.error) {
 				return { content, recognized: true, error: anchor.error };
 			}
-			operations.push({ start: anchor.index + 1, deleteCount: 0, lines: edit.lines });
-			continue;
-		}
-
-		if (edit.kind === "prepend") {
-			if (!edit.anchor) {
-				operations.push({ start: 0, deleteCount: 0, lines: edit.lines });
-				continue;
-			}
-
-			const anchor = resolveAnchorIndex(edit.anchor, fileLines);
-			if (anchor.error) {
-				return { content, recognized: true, error: anchor.error };
-			}
-			operations.push({ start: anchor.index, deleteCount: 0, lines: edit.lines });
+			operations.push({ start: anchor.index + anchorOffset, deleteCount: 0, lines: edit.lines });
 			continue;
 		}
 

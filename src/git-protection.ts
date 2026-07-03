@@ -17,7 +17,7 @@ interface GitExec {
 	(command: string, args: string[], options?: { cwd?: string; timeout?: number }): Promise<ExecResult>;
 }
 
-function createAllowedResult(): GitProtectionCheckResult {
+function createAllowedGitResult(): GitProtectionCheckResult {
 	return { blocked: false, reason: "" };
 }
 
@@ -70,22 +70,23 @@ async function ensureGitRepository(
 	return result.code === 0 && result.stdout.trim() === "true";
 }
 
+function addDiffPath(paths: Set<string>, line: string): void {
+	const path = line.slice(6).trim();
+	if (path && path !== "/dev/null") {
+		paths.add(path);
+	}
+}
+
 function collectDiffPaths(diff: string): string[] {
 	const paths = new Set<string>();
 	for (const line of diff.split(/\r?\n/)) {
 		if (line.startsWith("+++ b/")) {
-			const path = line.slice(6).trim();
-			if (path && path !== "/dev/null") {
-				paths.add(path);
-			}
+			addDiffPath(paths, line);
 			continue;
 		}
 
 		if (line.startsWith("--- a/")) {
-			const path = line.slice(6).trim();
-			if (path && path !== "/dev/null") {
-				paths.add(path);
-			}
+			addDiffPath(paths, line);
 		}
 	}
 
@@ -134,6 +135,14 @@ async function getCommitDiff(
 	};
 }
 
+function parseCommitHashes(stdout: string, maxCommits: number): string[] {
+	return stdout
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter((line) => line.length > 0)
+		.slice(0, maxCommits);
+}
+
 async function getPushCommitHashes(
 	exec: GitExec,
 	cwd: string,
@@ -146,11 +155,7 @@ async function getPushCommitHashes(
 	]);
 	if (withUpstream.code === 0) {
 		return {
-			hashes: withUpstream.stdout
-				.split(/\r?\n/)
-				.map((line) => line.trim())
-				.filter((line) => line.length > 0)
-				.slice(0, config.gitProtection.maxCommits),
+			hashes: parseCommitHashes(withUpstream.stdout, config.gitProtection.maxCommits),
 		};
 	}
 
@@ -170,11 +175,7 @@ async function getPushCommitHashes(
 	}
 
 	return {
-		hashes: withoutRemote.stdout
-			.split(/\r?\n/)
-			.map((line) => line.trim())
-			.filter((line) => line.length > 0)
-			.slice(0, config.gitProtection.maxCommits),
+		hashes: parseCommitHashes(withoutRemote.stdout, config.gitProtection.maxCommits),
 	};
 }
 
@@ -230,12 +231,12 @@ export async function checkGitProtection(input: {
 	const { command, cwd, exec, matcher, config } = input;
 	const actions = await detectGitActions(command, config);
 	if (actions.length === 0) {
-		return createAllowedResult();
+		return createAllowedGitResult();
 	}
 
 	const isRepo = await ensureGitRepository(exec, cwd, config.gitProtection.diffTimeoutMs);
 	if (!isRepo) {
-		return createAllowedResult();
+		return createAllowedGitResult();
 	}
 
 	for (const actionTarget of actions) {
@@ -299,5 +300,5 @@ export async function checkGitProtection(input: {
 		}
 	}
 
-	return createAllowedResult();
+	return createAllowedGitResult();
 }
