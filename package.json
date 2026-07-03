@@ -25,7 +25,8 @@
     "posttest": "npm run test:clean",
     "check": "npm run build && npm run lint && npm run test",
     "package:dry-run": "npm pack --dry-run",
-    "prepublishOnly": "npm run check"
+    "prepublishOnly": "npm run check",
+    "postinstall": "node -e \"const fs=require('fs'),cp=require('child_process'),p=require('path');const cwd=process.cwd();const normalized=cwd.split(p.sep).join('/');if(!normalized.includes('/.pi/agent/extensions/'))process.exit(0);const s=p.resolve(cwd,'../../scripts/patch-vulnerable-deps.mjs');if(!fs.existsSync(s))process.exit(0);const r=cp.spawnSync(process.execPath,[s,'--target',cwd,'--quiet'],{stdio:'inherit'});process.exit(r.status||0)\""
   },
   "keywords": [
     "pi-package",
@@ -65,11 +66,15 @@
     "@aliou/sh": "^0.2.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.74.0 || ^0.75.0 || ^0.78.0 || ^0.79.0"
+    "@earendil-works/pi-coding-agent": "^0.74.0 || ^0.75.0 || ^0.78.0 || ^0.79.0 || ^0.80.0"
   },
   "devDependencies": {
-    "@types/node": "^25.9.3",
+    "@types/node": "^26.1.0",
     "typescript": "^6.0.3",
-    "@earendil-works/pi-coding-agent": "^0.79.4"
+    "@earendil-works/pi-coding-agent": "^0.80.3"
+  },
+  "overrides": {
+    "protobufjs": "7.6.3",
+    "ws": "8.21.0"
   }
 }
