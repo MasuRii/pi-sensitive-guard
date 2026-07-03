@@ -1,4 +1,4 @@
-export type ConfigSource = "primary" | "fallback";
+export type ConfigSource = "primary" | "fallback" | "merged";
 export type ProtectionLevel = "none" | "readOnly" | "noAccess";
 export type ReadRedactionScope = "protectedOnly" | "allOutput";
 export type BlockKind = "read" | "write" | "delete";
