@@ -24,6 +24,26 @@ export const DEFAULT_BLOCKED_EVENTS_LOG_PATH = join(
 	"blocked-events.jsonl",
 );
 
+/**
+ * Project-local config filename. When a file with this name exists in the active workspace
+ * directory, it is merged on top of the global (extension-root) config via
+ * {@link mergeSensitiveGuardConfigs}.
+ */
+export const PROJECT_CONFIG_FILENAME = "sensitive-guard.json";
+
+/**
+ * Maximum number of agent-written script paths retained for write/execute correlation.
+ * Once this cap is reached, the oldest entry is evicted (FIFO), bounding memory in
+ * long sessions while preserving recent correlation coverage.
+ */
+export const MAX_AGENT_WRITTEN_PATHS = 256;
+
+/**
+ * Number of repeated protection denials against the same target before the anti-loop
+ * hard-stop message is escalated. Counts are tracked per target within a session.
+ */
+export const ANTI_LOOP_BLOCK_THRESHOLD = 3;
+
 export const DEFAULT_PROTECTED_PATTERN_CONFIGS: PatternConfig[] = [
 	{ pattern: "(^|[\\\\/])auth\\.json$", regex: true },
 	{ pattern: "(^|[\\\\/])\\.env(?:\\.[^\\\\/]+)?$", regex: true },
@@ -95,11 +115,37 @@ const GENERIC_SECRET_VALUE_PATTERN = String.raw`[A-Za-z0-9][A-Za-z0-9\-_./+=]{19
 const QUOTED_OR_BARE_ASSIGNMENT_PREFIX_PATTERN = String.raw`(?:^|[\s{[,;])['\"]?`;
 const QUOTED_OR_BARE_ASSIGNMENT_SEPARATOR_PATTERN = String.raw`['\"]?\s*[=:]\s*['\"]?`;
 
-function createSensitiveAssignmentPattern(keyNamePattern: string): RegExp {
-	return new RegExp(
-		`${QUOTED_OR_BARE_ASSIGNMENT_PREFIX_PATTERN}(?:${keyNamePattern})${QUOTED_OR_BARE_ASSIGNMENT_SEPARATOR_PATTERN}(${GENERIC_SECRET_VALUE_PATTERN})['\"]?`,
-		"i",
-	);
+/**
+ * Maximum allowed length for an assembled regex pattern. Patterns above this limit are rejected
+ * and replaced with {@link NEVER_MATCH_PATTERN} to prevent ReDoS-style backtracking on oversized
+ * attacker-controlled inputs. The largest legitimate internal pattern is 390 chars (verified via
+ * `DEFAULT_CONFIG` / `DEFAULT_SENSITIVE_KEY_PATTERN_CONFIGS` / `SECRET_PATTERNS`), so 1000 provides
+ * ~2.5x headroom while still rejecting pathological inputs.
+ */
+const MAX_ASSIGNMENT_PATTERN_LENGTH = 1000;
+const NEVER_MATCH_PATTERN = /\$a/;
+
+/**
+ * Compiles a sensitive-assignment detection regex from a dynamic key-name pattern. The assembled
+ * pattern is length-bounded to mitigate ReDoS risk from oversized keyNamePattern inputs; oversized
+ * patterns resolve to {@link NEVER_MATCH_PATTERN} instead of being passed to `new RegExp()`.
+ * Suppressed as non-literal RegExp: the dynamic keyNamePattern is an internal config constant,
+ * length-bounded, and wrapped in a try/catch.
+ */
+function compileAssignmentPattern(keyNamePattern: string): RegExp {
+	const assembled = `${QUOTED_OR_BARE_ASSIGNMENT_PREFIX_PATTERN}(?:${keyNamePattern})${QUOTED_OR_BARE_ASSIGNMENT_SEPARATOR_PATTERN}(${GENERIC_SECRET_VALUE_PATTERN})['\"]?`;
+	if (assembled.length > MAX_ASSIGNMENT_PATTERN_LENGTH) {
+		return NEVER_MATCH_PATTERN;
+	}
+	try {
+		return new RegExp(assembled, "i"); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- keyNamePattern is an internal config constant, length-bounded above, and wrapped in try/catch.
+	} catch {
+		return NEVER_MATCH_PATTERN;
+	}
+}
+
+export function createSensitiveAssignmentPattern(keyNamePattern: string): RegExp {
+	return compileAssignmentPattern(keyNamePattern);
 }
 
 export const DEFAULT_SENSITIVE_KEY_PATTERN_CONFIGS: PatternConfig[] = [

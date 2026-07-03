@@ -5,24 +5,46 @@ import {
 	FILE_DELETE_COMMANDS,
 	FILE_READ_COMMANDS,
 	FILE_WRITE_COMMANDS,
+	MAX_AGENT_WRITTEN_PATHS,
 } from "./constants.js";
 import { type ModuleCache, loadCachedModule } from "./module-loader.js";
+import { compileRegex } from "./shared/index.js";
 import type {
 	CommandCheckResult,
 	GuardCheckResult,
 	ParsedShellCommand,
 	PatternConfig,
 	ProtectionLevel,
-	ResolvedProtectionRule,
 	ResolvedSensitiveGuardConfig,
 	SensitiveGuardMatcher,
 } from "./types.js";
 
-const NEVER_MATCH_PATTERN = /$a/;
 const READ_COMMAND_SET = new Set(FILE_READ_COMMANDS.map((command) => command.toLowerCase()));
 const READ_SOURCE_COMMAND_SET = new Set(["cp", "copy", "mv", "move", "install"]);
 const WRITE_COMMAND_SET = new Set(FILE_WRITE_COMMANDS.map((command) => command.toLowerCase()));
 const DELETE_COMMAND_SET = new Set(FILE_DELETE_COMMANDS.map((command) => command.toLowerCase()));
+const SCRIPT_EXECUTE_COMMAND_SET = new Set([
+	"bash",
+	"bun",
+	"cmd",
+	"dash",
+	"deno",
+	"fish",
+	"ksh",
+	"node",
+	"perl",
+	"php",
+	"powershell",
+	"pwsh",
+	"python",
+	"python3",
+	"ruby",
+	"sh",
+	"zsh",
+]);
+const ENV_ECHO_COMMAND_PATTERN = /(?:^|[;&|()\s])(?:cat|echo|env|printenv|printf|bash|dash|fish|ksh|pwsh|powershell|sh|zsh)\b|<</i;
+const ENV_VAR_REFERENCE_PATTERN = /\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?:[^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g;
+const AGENT_GENERATED_SCRIPT_PATTERN = /(?:^|\/)\.pi\/agent\/generated\/.+\.(?:bash|bat|cmd|cjs|js|mjs|pl|ps1|py|rb|sh|ts|zsh)$/i;
 
 type ShellParserModule = typeof import("./shell-parser.js");
 
@@ -42,6 +64,11 @@ interface CompiledPattern {
 	test: (input: string) => boolean;
 }
 
+interface CompiledEnvKeyPattern {
+	source: PatternConfig;
+	test: (input: string) => boolean;
+}
+
 interface CompiledRule {
 	id: string;
 	patterns: CompiledPattern[];
@@ -49,14 +76,6 @@ interface CompiledRule {
 	protection: ProtectionLevel;
 	onlyIfExists: boolean;
 	enabled: boolean;
-}
-
-function compileRegex(pattern: string, flags: string): RegExp {
-	try {
-		return new RegExp(pattern, flags);
-	} catch {
-		return NEVER_MATCH_PATTERN;
-	}
 }
 
 function normalizeFilePath(input: string): string {
@@ -86,9 +105,13 @@ function normalizeCommandWord(value: string): string {
 	return normalized.split("/").pop() ?? normalized;
 }
 
+function tryCompileRegex(pattern: PatternConfig): RegExp | null {
+	return pattern.regex ? compileRegex(pattern.pattern, "i") : null;
+}
+
 function compilePattern(pattern: PatternConfig): CompiledPattern {
-	if (pattern.regex) {
-		const compiled = compileRegex(pattern.pattern, "i");
+	const compiled = tryCompileRegex(pattern);
+	if (compiled) {
 		return {
 			source: pattern,
 			test: (input) => compiled.test(normalizeFilePath(input)),
@@ -105,6 +128,24 @@ function compilePattern(pattern: PatternConfig): CompiledPattern {
 				: (normalized.split("/").pop() ?? normalized);
 			return matchesGlob(candidate, pattern.pattern);
 		},
+	};
+}
+
+function compileEnvKeyPattern(pattern: PatternConfig): CompiledEnvKeyPattern {
+	const compiled = tryCompileRegex(pattern);
+	if (compiled) {
+		return {
+			source: pattern,
+			test: (input) => {
+				compiled.lastIndex = 0;
+				return compiled.test(input);
+			},
+		};
+	}
+
+	return {
+		source: pattern,
+		test: (input) => matchesGlob(input, pattern.pattern),
 	};
 }
 
@@ -125,6 +166,44 @@ function createAllowedResult(): GuardCheckResult {
 
 function createAllowedCommandResult(): CommandCheckResult {
 	return { blocked: false, reason: "" };
+}
+
+function createPathBlockResult(
+	result: CommandCheckResult,
+	action: "reads" | "writes",
+	commandName: string,
+	commandWords: string[],
+): CommandCheckResult {
+	return {
+		...result,
+		reason: `Command ${action} protected path '${result.target}'.`,
+		commandName,
+		commandWords,
+	};
+}
+
+async function parseCommandsForCheck(command: string): Promise<ParsedShellCommand[] | null> {
+	if (!command || typeof command !== "string") {
+		return null;
+	}
+	return parseShellCommandLazy(command);
+}
+
+function checkRedirectBlock(
+	parsedCommand: ParsedShellCommand,
+	action: "read" | "write",
+	checkPath: (path: string) => GuardCheckResult,
+): CommandCheckResult | undefined {
+	const redirectResult = checkRedirects(parsedCommand.redirects, action, checkPath);
+	if (redirectResult.blocked) {
+		return createPathBlockResult(
+			redirectResult,
+			action === "read" ? "reads" : "writes",
+			getCommandName(getCommandWords(parsedCommand)),
+			parsedCommand.words,
+		);
+	}
+	return undefined;
 }
 
 function createBlockedResult(
@@ -160,7 +239,9 @@ function candidatePaths(inputPath: string): string[] {
 			candidates.add(resolved);
 		}
 	} catch {
-		// Path does not exist or is unreachable; rely on the normalized path.
+		// realpathSync fails when the path does not exist or is unreachable;
+		// fall back to the normalized path already in candidates.
+		return [...candidates];
 	}
 	return [...candidates];
 }
@@ -253,22 +334,59 @@ function getCommandSubcommand(words: string[]): string {
 	return "";
 }
 
-function getReadCandidateWords(commandName: string, words: string[]): string[] {
+function filterSourceOperands(words: string[]): string[] {
+	return words.slice(1).filter((word) => !normalizePathToken(word).startsWith("-"));
+}
+
+function getCandidateWords(
+	commandName: string,
+	words: string[],
+	selectOperands: (operands: string[]) => string[],
+): string[] {
 	if (!READ_SOURCE_COMMAND_SET.has(commandName)) {
 		return words.slice(1);
 	}
 
-	const operands = words.slice(1).filter((word) => !normalizePathToken(word).startsWith("-"));
-	return operands.length > 1 ? operands.slice(0, -1) : operands;
+	const operands = filterSourceOperands(words);
+	return operands.length > 1 ? selectOperands(operands) : operands;
+}
+
+function getReadCandidateWords(commandName: string, words: string[]): string[] {
+	return getCandidateWords(commandName, words, (operands) => operands.slice(0, -1));
 }
 
 function getWriteCandidateWords(commandName: string, words: string[]): string[] {
-	if (!READ_SOURCE_COMMAND_SET.has(commandName)) {
-		return words.slice(1);
+	return getCandidateWords(commandName, words, (operands) => operands.slice(-1));
+}
+
+function findSecretEnvVarNames(command: string, patterns: CompiledEnvKeyPattern[]): string[] {
+	const names = new Set<string>();
+	for (const match of command.matchAll(ENV_VAR_REFERENCE_PATTERN)) {
+		const name = match[1] ?? match[2] ?? "";
+		if (name && patterns.some((pattern) => pattern.test(name))) {
+			names.add(name);
+		}
+	}
+	return [...names];
+}
+
+function isAgentGeneratedScriptPath(path: string): boolean {
+	return AGENT_GENERATED_SCRIPT_PATTERN.test(normalizePathToken(path));
+}
+
+function findAgentWrittenExecutable(
+	commandName: string,
+	words: string[],
+	agentWrittenPaths: Set<string>,
+): string | undefined {
+	if (!SCRIPT_EXECUTE_COMMAND_SET.has(commandName)) {
+		return undefined;
 	}
 
-	const operands = words.slice(1).filter((word) => !normalizePathToken(word).startsWith("-"));
-	return operands.length > 1 ? operands.slice(-1) : operands;
+	return words
+		.slice(1)
+		.map(normalizePathToken)
+		.find((word) => word.length > 0 && !word.startsWith("-") && agentWrittenPaths.has(word));
 }
 
 function checkRedirects(
@@ -298,6 +416,23 @@ export function createSensitiveGuardMatcher(
 	config: ResolvedSensitiveGuardConfig,
 ): SensitiveGuardMatcher {
 	const compiledRules = compileRules(config);
+	const compiledEnvKeyPatterns = config.readRedaction.sensitiveKeyPatterns.map(compileEnvKeyPattern);
+	const agentWrittenPaths = new Set<string>();
+	const agentWrittenPathOrder: string[] = [];
+
+	const trackAgentWrittenPath = (normalizedPath: string): void => {
+		if (agentWrittenPaths.has(normalizedPath)) {
+			return;
+		}
+		agentWrittenPaths.add(normalizedPath);
+		agentWrittenPathOrder.push(normalizedPath);
+		while (agentWrittenPathOrder.length > MAX_AGENT_WRITTEN_PATHS) {
+			const evicted = agentWrittenPathOrder.shift();
+			if (evicted !== undefined) {
+				agentWrittenPaths.delete(evicted);
+			}
+		}
+	};
 
 	const evaluatePath = (
 		filePath: string,
@@ -305,6 +440,11 @@ export function createSensitiveGuardMatcher(
 		threshold = getActionThreshold(action),
 	): GuardCheckResult => {
 		if (!config.enabled || !filePath || typeof filePath !== "string") {
+			return createAllowedResult();
+		}
+
+		if (action === "write" && isAgentGeneratedScriptPath(filePath)) {
+			trackAgentWrittenPath(normalizePathToken(filePath));
 			return createAllowedResult();
 		}
 
@@ -383,23 +523,45 @@ export function createSensitiveGuardMatcher(
 				return createAllowedCommandResult();
 			}
 
-			for (const parsedCommand of await parseShellCommandLazy(command)) {
-				const redirectResult = checkRedirects(
-					parsedCommand.redirects,
-					"read",
-					checkReadPath,
-				);
-				if (redirectResult.blocked) {
-					return {
-						...redirectResult,
-						reason: `Command reads protected path '${redirectResult.target}'.`,
-						commandWords: parsedCommand.words,
-						commandName: getCommandName(getCommandWords(parsedCommand)),
-					};
+			const parsedCommands = await parseShellCommandLazy(command);
+			const secretEnvVars = findSecretEnvVarNames(command, compiledEnvKeyPatterns);
+			if (secretEnvVars.length > 0 && ENV_ECHO_COMMAND_PATTERN.test(command)) {
+				const firstParsedCommand = parsedCommands[0];
+				const commandWords = firstParsedCommand ? getCommandWords(firstParsedCommand) : [];
+				return {
+					blocked: true,
+					reason: `Command may echo secret environment variable '${secretEnvVars[0]}'.`,
+					kind: "read",
+					target: secretEnvVars[0],
+					commandName: firstParsedCommand ? getCommandName(commandWords) : undefined,
+					commandWords,
+				};
+			}
+
+			for (const parsedCommand of parsedCommands) {
+				const redirectBlock = checkRedirectBlock(parsedCommand, "read", checkReadPath);
+				if (redirectBlock) {
+					return redirectBlock;
 				}
 
 				const commandWords = getCommandWords(parsedCommand);
 				const commandName = getCommandName(commandWords);
+				const agentWrittenTarget = findAgentWrittenExecutable(
+					commandName,
+					parsedCommand.words,
+					agentWrittenPaths,
+				);
+				if (agentWrittenTarget) {
+					return {
+						blocked: true,
+						reason: `Command executes agent-written file '${agentWrittenTarget}' blocked by write/execute correlation.`,
+						kind: "read",
+						target: agentWrittenTarget,
+						commandName,
+						commandWords,
+					};
+				}
+
 				if (!READ_COMMAND_SET.has(commandName) && !READ_SOURCE_COMMAND_SET.has(commandName)) {
 					continue;
 				}
@@ -410,12 +572,7 @@ export function createSensitiveGuardMatcher(
 					"read",
 				);
 				if (sensitivePath.blocked) {
-					return {
-						...sensitivePath,
-						reason: `Command reads protected path '${sensitivePath.target}'.`,
-						commandName,
-						commandWords,
-					};
+					return createPathBlockResult(sensitivePath, "reads", commandName, commandWords);
 				}
 			}
 
@@ -423,23 +580,15 @@ export function createSensitiveGuardMatcher(
 		},
 
 		async checkWriteCommand(command: string): Promise<CommandCheckResult> {
-			if (!command || typeof command !== "string") {
+			const parsedCommands = await parseCommandsForCheck(command);
+			if (!parsedCommands) {
 				return createAllowedCommandResult();
 			}
 
-			for (const parsedCommand of await parseShellCommandLazy(command)) {
-				const redirectResult = checkRedirects(
-					parsedCommand.redirects,
-					"write",
-					checkWritePath,
-				);
-				if (redirectResult.blocked) {
-					return {
-						...redirectResult,
-						reason: `Command writes protected path '${redirectResult.target}'.`,
-						commandWords: parsedCommand.words,
-						commandName: getCommandName(getCommandWords(parsedCommand)),
-					};
+			for (const parsedCommand of parsedCommands) {
+				const redirectBlock = checkRedirectBlock(parsedCommand, "write", checkWritePath);
+				if (redirectBlock) {
+					return redirectBlock;
 				}
 
 				const commandWords = getCommandWords(parsedCommand);
@@ -450,12 +599,7 @@ export function createSensitiveGuardMatcher(
 					"write",
 				);
 				if (WRITE_COMMAND_SET.has(commandName) && sensitivePath.blocked) {
-					return {
-						...sensitivePath,
-						reason: `Command writes protected path '${sensitivePath.target}'.`,
-						commandName,
-						commandWords,
-					};
+					return createPathBlockResult(sensitivePath, "writes", commandName, commandWords);
 				}
 
 				if (
@@ -476,62 +620,61 @@ export function createSensitiveGuardMatcher(
 		},
 
 		async checkDeleteCommand(command: string): Promise<CommandCheckResult> {
-			if (!command || typeof command !== "string") {
-				return createAllowedCommandResult();
-			}
+			const parsedCommands = await parseCommandsForCheck(command);
+			if (parsedCommands) {
+				for (const parsedCommand of parsedCommands) {
+					const commandWords = getCommandWords(parsedCommand);
+					const commandName = getCommandName(commandWords);
+					const subcommand = getCommandSubcommand(commandWords);
+					const sensitivePath = findSensitivePathInWords(
+						parsedCommand.words.slice(1),
+						checkDeletePath,
+						"delete",
+					);
 
-			for (const parsedCommand of await parseShellCommandLazy(command)) {
-				const commandWords = getCommandWords(parsedCommand);
-				const commandName = getCommandName(commandWords);
-				const subcommand = getCommandSubcommand(commandWords);
-				const sensitivePath = findSensitivePathInWords(
-					parsedCommand.words.slice(1),
-					checkDeletePath,
-					"delete",
-				);
+					if (DELETE_COMMAND_SET.has(commandName) && sensitivePath.blocked) {
+						return {
+							...sensitivePath,
+							reason: `Command deletes protected path '${sensitivePath.target}'.`,
+							commandName,
+							commandWords,
+						};
+					}
 
-				if (DELETE_COMMAND_SET.has(commandName) && sensitivePath.blocked) {
-					return {
-						...sensitivePath,
-						reason: `Command deletes protected path '${sensitivePath.target}'.`,
-						commandName,
-						commandWords,
-					};
-				}
+					if (commandName === "git" && subcommand === "rm" && sensitivePath.blocked) {
+						return {
+							...sensitivePath,
+							reason: `Git command removes protected path '${sensitivePath.target}'.`,
+							commandName,
+							commandWords,
+						};
+					}
 
-				if (commandName === "git" && subcommand === "rm" && sensitivePath.blocked) {
-					return {
-						...sensitivePath,
-						reason: `Git command removes protected path '${sensitivePath.target}'.`,
-						commandName,
-						commandWords,
-					};
-				}
+					if (
+						((commandName === "gio" && subcommand === "trash") ||
+							(commandName === "git" && subcommand === "clean")) &&
+						sensitivePath.blocked
+					) {
+						return {
+							...sensitivePath,
+							reason: `Command trashes or cleans protected path '${sensitivePath.target}'.`,
+							commandName,
+							commandWords,
+						};
+					}
 
-				if (
-					((commandName === "gio" && subcommand === "trash") ||
-						(commandName === "git" && subcommand === "clean")) &&
-					sensitivePath.blocked
-				) {
-					return {
-						...sensitivePath,
-						reason: `Command trashes or cleans protected path '${sensitivePath.target}'.`,
-						commandName,
-						commandWords,
-					};
-				}
-
-				if (
-					(commandName === "mv" || commandName === "move") &&
-					parsedCommand.words.some((word) => normalizePathToken(word) === "/dev/null") &&
-					sensitivePath.blocked
-				) {
-					return {
-						...sensitivePath,
-						reason: `Command destroys protected path '${sensitivePath.target}'.`,
-						commandName,
-						commandWords,
-					};
+					if (
+						(commandName === "mv" || commandName === "move") &&
+						parsedCommand.words.some((word) => normalizePathToken(word) === "/dev/null") &&
+						sensitivePath.blocked
+					) {
+						return {
+							...sensitivePath,
+							reason: `Command destroys protected path '${sensitivePath.target}'.`,
+							commandName,
+							commandWords,
+						};
+					}
 				}
 			}
 

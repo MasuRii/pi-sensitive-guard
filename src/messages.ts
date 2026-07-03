@@ -37,3 +37,12 @@ export function buildGitProtectionSecurityMessage(
 		"Remove sensitive changes, then retry.",
 	].join("\n");
 }
+
+export function buildAntiLoopBlockReason(attempt: number, target?: string): string {
+	const targetDetail = target ? ` Target: '${target}'.` : "";
+	return [
+		"Hard stop: this sensitive-guard denial is policy-enforced.",
+		`Repeated protection loop detected after ${attempt} attempt(s).${targetDetail}`,
+		"Do not retry this target, do not investigate bypasses, and report the block to the user.",
+	].join(" ");
+}

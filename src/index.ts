@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 import {
@@ -8,11 +8,16 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import { type ModuleCache, loadCachedModule } from "./module-loader.js";
+import { ANTI_LOOP_BLOCK_THRESHOLD } from "./constants.js";
+import { describeError, getSensitiveGuardConfigCompletions, toRecord } from "./shared/index.js";
+import { loadConfig } from "./config.js";
 import type {
 	CommandCheckResult,
+	GuardCheckResult,
 	GuardFeature,
 	PendingReadRedaction,
 	ResolvedSensitiveGuardConfig,
+	SecretFinding,
 	SensitiveGuardBlockedEvent,
 	SensitiveGuardMatcher,
 } from "./types.js";
@@ -169,6 +174,20 @@ function resolveToolPath(cwd: string, path: string): string {
 	return isAbsolute(path) ? path : resolve(cwd, path);
 }
 
+function readCurrentFileContent(cwd: string, filePath: string): string {
+	return readFileSync(resolveToolPath(cwd, filePath), "utf-8");
+}
+
+async function withProtectedFileContent<T>(
+	cwd: string,
+	inputPath: string,
+	evaluate: (module: ProtectedFileEditsModule, currentContent: string) => T | Promise<T>,
+): Promise<T> {
+	const currentContent = readCurrentFileContent(cwd, inputPath);
+	const module = await loadProtectedFileEditsModule();
+	return evaluate(module, currentContent);
+}
+
 function createBlockedEvent(
 	feature: GuardFeature,
 	action: SensitiveGuardBlockedEvent["action"],
@@ -188,13 +207,6 @@ function createBlockedEvent(
 		ruleId,
 		metadata,
 	};
-}
-
-function toRecord(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return {};
-	}
-	return value as Record<string, unknown>;
 }
 
 interface TextContentBlock {
@@ -237,12 +249,17 @@ function mergeRedactionDetails(
 }
 
 export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
+	if (!loadConfig().config.enabled) {
+		return;
+	}
+
 	let config: ResolvedSensitiveGuardConfig | undefined;
 	let matcher: SensitiveGuardMatcher | undefined;
 	let debugLogger: SensitiveGuardDebugLogger | undefined;
 	let initializedPromise: Promise<void> | undefined;
 	const warnedMessages = new Set<string>();
 	const pendingRedactions = new Map<string, PendingReadRedaction>();
+	const blockAttemptsByTarget = new Map<string, number>();
 
 	const warnOnce = (ctx: ExtensionContext, message: string): void => {
 		if (warnedMessages.has(message)) {
@@ -279,6 +296,28 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 		return matcher;
 	};
 
+	/**
+	 * Records a protection denial against `target` and, once the per-target attempt
+	 * count reaches {@link ANTI_LOOP_BLOCK_THRESHOLD}, escalates the block reason to
+	 * the anti-loop hard-stop message via {@link buildAntiLoopBlockReason}.
+	 * Returns the reason the caller should surface to the agent.
+	 */
+	const recordBlockAttempt = async (
+		target: string | undefined,
+		baseReason: string,
+	): Promise<string> => {
+		if (!target) {
+			return baseReason;
+		}
+		const attempts = (blockAttemptsByTarget.get(target) ?? 0) + 1;
+		blockAttemptsByTarget.set(target, attempts);
+		if (attempts >= ANTI_LOOP_BLOCK_THRESHOLD) {
+			const { buildAntiLoopBlockReason } = await loadMessagesModule();
+			return buildAntiLoopBlockReason(attempts, target);
+		}
+		return baseReason;
+	};
+
 	const reportBlockedEvent = async (
 		ctx: ExtensionContext,
 		event: SensitiveGuardBlockedEvent,
@@ -293,6 +332,129 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 		if (logError) {
 			warnOnce(ctx, `${EXTENSION_NAME}: ${logError}`);
 		}
+	};
+
+	/**
+	 * Blocks and returns a path-protection denial for write/edit handlers.
+	 * Encapsulates the shared notify → report → build-reason → record pattern
+	 * so the write and edit handlers do not duplicate the block boilerplate.
+	 */
+	const returnPathProtectionBlock = async (
+		ctx: ExtensionContext,
+		toolName: string,
+		inputPath: string,
+		pathResult: GuardCheckResult,
+		detailReason: string,
+	): Promise<{ block: true; reason: string }> => {
+		notify(ctx, getPathBlockMessage("write", pathResult.target ?? inputPath), "error");
+		await reportBlockedEvent(
+			ctx,
+			createBlockedEvent(
+				"pathProtection",
+				"write",
+				detailReason,
+				toolName,
+				pathResult.target,
+				pathResult.ruleId,
+				{ path: inputPath },
+			),
+		);
+		const { WRITE_SECURITY_MESSAGE } = await loadMessagesModule();
+		const baseReason = buildProtectedWriteBlockReason(WRITE_SECURITY_MESSAGE, detailReason);
+		const reason = await recordBlockAttempt(pathResult.target, baseReason);
+		return { block: true, reason };
+	};
+
+	/**
+	 * Scans content for blockable secrets and gathers the baseline finding count.
+	 * Encapsulates the shared scanner-load → scan → baseline → filter pipeline so
+	 * the write and edit handlers do not duplicate the setup boilerplate.
+	 */
+	const scanForSecretFindings = async (
+		content: string,
+		filePath: string,
+		cwd: string,
+		config: ResolvedSensitiveGuardConfig,
+	): Promise<{ findings: SecretFinding[]; baselineCount: number }> => {
+		const { getBlockableSecretFindings, scanContentForSecrets, scanFileForSecretsCached } =
+			await loadSecretScannerModule();
+		const newContentFindings = scanContentForSecrets(
+			content,
+			config.contentScanning.maxFindings,
+			{ file: filePath },
+		);
+		const resolvedFilePath = resolveToolPath(cwd, filePath);
+		const baselineFindings = existsSync(resolvedFilePath)
+			? scanFileForSecretsCached(resolvedFilePath, config.contentScanning.maxFindings).findings
+			: [];
+		return {
+			findings: getBlockableSecretFindings(
+				newContentFindings,
+				config.contentScanning.blockSeverity,
+			),
+			baselineCount: baselineFindings.length,
+		};
+	};
+
+	/**
+	 * Blocks and returns a content-scan denial for write/edit handlers.
+	 * Encapsulates the shared format → notify → report → build-reason → record
+	 * pattern so the write and edit handlers do not duplicate the block boilerplate.
+	 */
+	const returnContentScanBlock = async (
+		ctx: ExtensionContext,
+		toolName: string,
+		inputPath: string,
+		findings: SecretFinding[],
+		baselineCount: number,
+		notifyMessage: string,
+	): Promise<{ block: true; reason: string }> => {
+		const { formatSecretFindings } = await loadSecretScannerModule();
+		const detail = formatSecretFindings(findings);
+		notify(ctx, notifyMessage, "error");
+		await reportBlockedEvent(
+			ctx,
+			createBlockedEvent(
+				"contentScan",
+				"write",
+				detail,
+				toolName,
+				inputPath,
+				undefined,
+				{ findings, baselineSecretCount: baselineCount },
+			),
+		);
+		const { buildContentScanSecurityMessage } = await loadMessagesModule();
+		const baseReason = buildContentScanSecurityMessage(findings);
+		const reason = await recordBlockAttempt(inputPath, baseReason);
+		return { block: true, reason };
+	};
+
+	const checkContentScan = async (
+		content: string,
+		inputPath: string,
+		toolName: string,
+		ctx: ExtensionContext,
+		config: ResolvedSensitiveGuardConfig,
+		notifyMessage: string,
+	): Promise<{ block: true; reason: string } | undefined> => {
+		const { findings, baselineCount } = await scanForSecretFindings(
+			content,
+			inputPath,
+			ctx.cwd,
+			config,
+		);
+		if (findings.length > 0) {
+			return returnContentScanBlock(
+				ctx,
+				toolName,
+				inputPath,
+				findings,
+				baselineCount,
+				notifyMessage,
+			);
+		}
+		return undefined;
 	};
 
 	const scheduleReadRedaction = (
@@ -325,7 +487,7 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 			warnOnce(ctx, ensureResult.error);
 		}
 
-		const loaded = loadedConfigModule.loadConfig();
+		const loaded = loadedConfigModule.loadMergedConfig(ctx.cwd);
 		for (const warning of loaded.warnings) {
 			warnOnce(ctx, `${EXTENSION_NAME}: ${warning}`);
 		}
@@ -366,12 +528,8 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 	if (typeof pi.registerCommand === "function") {
 		pi.registerCommand("sensitive-guard", {
 			description: "Configure pi-sensitive-guard",
-			getArgumentCompletions: (prefix) => {
-				const completions = ["status", "edit"].filter((entry) => entry.startsWith(prefix));
-				return completions.length > 0
-					? completions.map((value) => ({ value, label: value }))
-					: null;
-			},
+			getArgumentCompletions: (prefix) =>
+				getSensitiveGuardConfigCompletions(prefix),
 			handler: async (args, ctx) => {
 				await ensureInitialized(ctx);
 				const { runSensitiveGuardConfigCommand } = await loadConfigCommandModule();
@@ -389,6 +547,9 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async () => {
+		blockAttemptsByTarget.clear();
+		const { resetScanCache } = await loadSecretScannerModule();
+		resetScanCache();
 		await debugLogger?.dispose();
 	});
 
@@ -441,7 +602,8 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 						),
 					);
 					const { READ_SECURITY_MESSAGE } = await loadMessagesModule();
-					return { block: true, reason: READ_SECURITY_MESSAGE };
+					const reason = await recordBlockAttempt(result.target, READ_SECURITY_MESSAGE);
+					return { block: true, reason };
 				}
 
 				return {};
@@ -454,15 +616,11 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 					let blockReason = pathResult.reason;
 					if (activeConfig.protectedFileEdits.enabled) {
 						try {
-							const currentContent = readFileSync(
-								resolveToolPath(ctx.cwd, event.input.path),
-								"utf-8",
-							);
-							const { evaluateProtectedFileWrite } = await loadProtectedFileEditsModule();
-							const evaluation = evaluateProtectedFileWrite(
-								currentContent,
-								event.input.content,
-								activeConfig,
+							const evaluation = await withProtectedFileContent(
+								ctx.cwd,
+								event.input.path,
+								(module, currentContent) =>
+									module.evaluateProtectedFileWrite(currentContent, event.input.content, activeConfig),
 							);
 							if (evaluation.allowed) {
 								protectedWriteBypass = true;
@@ -474,67 +632,26 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 								blockReason = evaluation.reason;
 							}
 						} catch (error) {
-							const message = error instanceof Error ? error.message : String(error);
-							blockReason = `Protected file write could not be validated safely: ${message}`;
+							blockReason = `Protected file write could not be validated safely: ${describeError(error)}`;
 						}
 					}
 
 					if (!protectedWriteBypass) {
-						notify(ctx, getPathBlockMessage("write", pathResult.target ?? event.input.path), "error");
-						await reportBlockedEvent(
-							ctx,
-							createBlockedEvent(
-								"pathProtection",
-								"write",
-								blockReason,
-								event.toolName,
-								pathResult.target,
-								pathResult.ruleId,
-								{ path: event.input.path },
-							),
-						);
-						const { WRITE_SECURITY_MESSAGE } = await loadMessagesModule();
-						return {
-							block: true,
-							reason: buildProtectedWriteBlockReason(WRITE_SECURITY_MESSAGE, blockReason),
-						};
+						return returnPathProtectionBlock(ctx, event.toolName, event.input.path, pathResult, blockReason);
 					}
 				}
 
 				if (activeConfig.contentScanning.enabled && !protectedWriteBypass) {
-					const {
-						formatSecretFindings,
-						getBlockableSecretFindings,
-						scanContentForSecrets,
-					} = await loadSecretScannerModule();
-					const findings = getBlockableSecretFindings(
-						scanContentForSecrets(
-							event.input.content,
-							activeConfig.contentScanning.maxFindings,
-							{ file: event.input.path },
-						),
-						activeConfig.contentScanning.blockSeverity,
+					const scanBlock = await checkContentScan(
+						event.input.content,
+						event.input.path,
+						event.toolName,
+						ctx,
+						activeConfig,
+						"Blocked: attempted to write secret-bearing content",
 					);
-					if (findings.length > 0) {
-						const detail = formatSecretFindings(findings);
-						notify(ctx, "Blocked: attempted to write secret-bearing content", "error");
-						await reportBlockedEvent(
-							ctx,
-							createBlockedEvent(
-								"contentScan",
-								"write",
-								detail,
-								event.toolName,
-								event.input.path,
-								undefined,
-								{ findings },
-							),
-						);
-						const { buildContentScanSecurityMessage } = await loadMessagesModule();
-						return {
-							block: true,
-							reason: buildContentScanSecurityMessage(findings),
-						};
+					if (scanBlock) {
+						return scanBlock;
 					}
 				}
 
@@ -547,18 +664,14 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 					let evaluation = { allowed: false, reason: pathResult.reason };
 					if (activeConfig.protectedFileEdits.enabled) {
 						try {
-							const currentContent = readFileSync(
-								resolveToolPath(ctx.cwd, event.input.path),
-								"utf-8",
-							);
-							const { evaluateProtectedFileEditInput } = await loadProtectedFileEditsModule();
-							evaluation = await evaluateProtectedFileEditInput(
-								currentContent,
-								event.input,
-								activeConfig,
+							evaluation = await withProtectedFileContent(
+								ctx.cwd,
+								event.input.path,
+								(module, currentContent) =>
+									module.evaluateProtectedFileEditInput(currentContent, event.input, activeConfig),
 							);
 						} catch (error) {
-							const message = error instanceof Error ? error.message : String(error);
+							const message = describeError(error);
 							evaluation = {
 								allowed: false,
 								reason: `Protected file edit could not be validated safely: ${message}`,
@@ -566,24 +679,7 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 						}
 					}
 					if (!evaluation.allowed) {
-						notify(ctx, getPathBlockMessage("write", pathResult.target ?? event.input.path), "error");
-						await reportBlockedEvent(
-							ctx,
-							createBlockedEvent(
-								"pathProtection",
-								"write",
-								evaluation.reason,
-								event.toolName,
-								pathResult.target,
-								pathResult.ruleId,
-								{ path: event.input.path },
-							),
-						);
-						const { WRITE_SECURITY_MESSAGE } = await loadMessagesModule();
-						return {
-							block: true,
-							reason: buildProtectedWriteBlockReason(WRITE_SECURITY_MESSAGE, evaluation.reason),
-						};
+						return returnPathProtectionBlock(ctx, event.toolName, event.input.path, pathResult, evaluation.reason);
 					}
 
 					writeDebug(ctx, "info", "protected_file_edit_allowed", {
@@ -593,39 +689,16 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 				}
 
 				if (activeConfig.contentScanning.enabled) {
-					const {
-						formatSecretFindings,
-						getBlockableSecretFindings,
-						scanContentForSecrets,
-					} = await loadSecretScannerModule();
-					const findings = getBlockableSecretFindings(
-						scanContentForSecrets(
-							getEditReplacementContent(event.input),
-							activeConfig.contentScanning.maxFindings,
-							{ file: event.input.path },
-						),
-						activeConfig.contentScanning.blockSeverity,
+					const scanBlock = await checkContentScan(
+						getEditReplacementContent(event.input),
+						event.input.path,
+						event.toolName,
+						ctx,
+						activeConfig,
+						"Blocked: attempted to edit in secret-bearing content",
 					);
-					if (findings.length > 0) {
-						const detail = formatSecretFindings(findings);
-						notify(ctx, "Blocked: attempted to edit in secret-bearing content", "error");
-						await reportBlockedEvent(
-							ctx,
-							createBlockedEvent(
-								"contentScan",
-								"write",
-								detail,
-								event.toolName,
-								event.input.path,
-								undefined,
-								{ findings },
-							),
-						);
-						const { buildContentScanSecurityMessage } = await loadMessagesModule();
-						return {
-							block: true,
-							reason: buildContentScanSecurityMessage(findings),
-						};
+					if (scanBlock) {
+						return scanBlock;
 					}
 				}
 
@@ -661,12 +734,14 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 							),
 						);
 						const { buildGitProtectionSecurityMessage } = await loadMessagesModule();
+						const baseReason = buildGitProtectionSecurityMessage(
+							gitCheck.action,
+							gitCheck.reason,
+						);
+						const reason = await recordBlockAttempt(gitCheck.target, baseReason);
 						return {
 							block: true,
-							reason: buildGitProtectionSecurityMessage(
-								gitCheck.action,
-								gitCheck.reason,
-							),
+							reason,
 						};
 					}
 				}
@@ -687,7 +762,8 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 						),
 					);
 					const { DELETE_SECURITY_MESSAGE } = await loadMessagesModule();
-					return { block: true, reason: DELETE_SECURITY_MESSAGE };
+					const reason = await recordBlockAttempt(deleteCheck.target, DELETE_SECURITY_MESSAGE);
+					return { block: true, reason };
 				}
 
 				const writeCheck = await activeMatcher.checkWriteCommand(event.input.command);
@@ -706,7 +782,8 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 						),
 					);
 					const { WRITE_SECURITY_MESSAGE } = await loadMessagesModule();
-					return { block: true, reason: WRITE_SECURITY_MESSAGE };
+					const reason = await recordBlockAttempt(writeCheck.target, WRITE_SECURITY_MESSAGE);
+					return { block: true, reason };
 				}
 
 				const readCheck = await activeMatcher.checkReadCommand(event.input.command);
@@ -747,7 +824,8 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 						),
 					);
 					const { READ_SECURITY_MESSAGE } = await loadMessagesModule();
-					return { block: true, reason: READ_SECURITY_MESSAGE };
+					const reason = await recordBlockAttempt(readCheck.target, READ_SECURITY_MESSAGE);
+					return { block: true, reason };
 				}
 
 				return {};
@@ -755,7 +833,7 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 
 			return {};
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const message = describeError(error);
 			const reason = `${EXTENSION_NAME}: blocked command because protection checks failed (${message}).`;
 			warnOnce(ctx, reason);
 			writeDebug(ctx, "warn", "tool_call_check_failed", { message });
@@ -851,7 +929,7 @@ export default function sensitiveGuardExtension(pi: ExtensionAPI): void {
 				),
 			};
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const message = describeError(error);
 			const safeContent = `[${EXTENSION_NAME}: read redaction failed; protected content was withheld. ${message}]`;
 			warnOnce(ctx, `${EXTENSION_NAME}: failed to redact protected read output: ${message}`);
 			writeDebug(ctx, "warn", "read_redaction_failed", {
