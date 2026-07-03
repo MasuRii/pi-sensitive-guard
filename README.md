@@ -1,12 +1,18 @@
+<div align="center">
+
 # pi-sensitive-guard
 
-[![npm version](https://img.shields.io/npm/v/pi-sensitive-guard?style=flat-square)](https://www.npmjs.com/package/pi-sensitive-guard) [![License](https://img.shields.io/github/license/MasuRii/pi-sensitive-guard?style=flat-square)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/pi-sensitive-guard?style=for-the-badge)](https://www.npmjs.com/package/pi-sensitive-guard)
+[![License](https://img.shields.io/github/license/MasuRii/pi-sensitive-guard?style=for-the-badge)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=for-the-badge)]()
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Y8Y01PSSVR)
 
 Sensitive-file protection extension for the [Pi coding agent](https://github.com/mariozechner/pi).
-
 <img width="1389" height="768" alt="image" src="https://github.com/user-attachments/assets/46e73cce-2be9-4669-b0ec-6422b68acc31" />
-
 `pi-sensitive-guard` blocks unsafe access to secret-bearing files, scans writes and Git diffs for common credential patterns, and can optionally return redacted protected reads for trusted workflows.
+
+</div>
 
 ## Features
 
