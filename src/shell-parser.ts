@@ -1,36 +1,210 @@
-import type {
-	Command,
-	Program,
-	SimpleCommand,
-	Statement,
-	Word,
-	WordPart,
-} from "@aliou/sh";
-
 import type { ParsedShellCommand, ParsedShellRedirect } from "./types.js";
+
+// --- Local structural types mirroring the @aliou/sh AST nodes consumed here. ---
+// Defined locally (rather than imported from @aliou/sh) so the module's type
+// contracts are explicit, self-documenting, and resilient to external package
+// type-resolution differences under the type-aware linter's project service.
+
+interface ShellLiteral {
+	type: "Literal";
+	value: string;
+}
+
+interface ShellSglQuoted {
+	type: "SglQuoted";
+	value: string;
+}
+
+interface ShellDblQuoted {
+	type: "DblQuoted";
+	parts: ShellWordPart[];
+}
+
+interface ShellParamExp {
+	type: "ParamExp";
+	short: boolean;
+	param: { value: string };
+	op?: string;
+	value?: ShellWord;
+}
+
+interface ShellCmdSubst {
+	type: "CmdSubst";
+}
+
+interface ShellArithExp {
+	type: "ArithExp";
+	expr: unknown;
+}
+
+interface ShellProcSubst {
+	type: "ProcSubst";
+	op: string;
+}
+
+interface ShellBraceExp {
+	type: "BraceExp";
+}
+
+interface ShellExtGlob {
+	type: "ExtGlob";
+}
+
+type ShellWordPart =
+	| ShellLiteral
+	| ShellSglQuoted
+	| ShellDblQuoted
+	| ShellParamExp
+	| ShellCmdSubst
+	| ShellArithExp
+	| ShellProcSubst
+	| ShellBraceExp
+	| ShellExtGlob;
+
+interface ShellWord {
+	parts: ShellWordPart[];
+}
+
+interface ShellRedirect {
+	op?: string;
+	target: ShellWord;
+}
+
+interface ShellSimpleCommand {
+	type: "SimpleCommand";
+	words?: ShellWord[];
+	redirects?: ShellRedirect[];
+}
+
+interface ShellPipeline {
+	type: "Pipeline";
+	commands: ShellStatement[];
+}
+
+interface ShellLogical {
+	type: "Logical";
+	left: ShellStatement;
+	right: ShellStatement;
+}
+
+interface ShellSubshell {
+	type: "Subshell";
+	body: ShellStatement[];
+}
+
+interface ShellBlock {
+	type: "Block";
+	body: ShellStatement[];
+}
+
+interface ShellIfClause {
+	type: "IfClause";
+	cond: ShellStatement[];
+	then: ShellStatement[];
+	else?: ShellStatement[];
+}
+
+interface ShellWhileClause {
+	type: "WhileClause";
+	cond: ShellStatement[];
+	body: ShellStatement[];
+}
+
+interface ShellForClause {
+	type: "ForClause";
+	body: ShellStatement[];
+}
+
+interface ShellSelectClause {
+	type: "SelectClause";
+	body: ShellStatement[];
+}
+
+interface ShellCaseItem {
+	body: ShellStatement[];
+}
+
+interface ShellCaseClause {
+	type: "CaseClause";
+	items: ShellCaseItem[];
+}
+
+interface ShellFunctionDecl {
+	type: "FunctionDecl";
+	body: ShellStatement[];
+}
+
+interface ShellTimeClause {
+	type: "TimeClause";
+	command: ShellStatement;
+}
+
+interface ShellCoprocClause {
+	type: "CoprocClause";
+	body: ShellStatement;
+}
+
+interface ShellCStyleLoop {
+	type: "CStyleLoop";
+	body: ShellStatement[];
+}
+
+interface ShellTerminalCommand {
+	type: "TestClause" | "ArithCmd" | "DeclClause" | "LetClause";
+}
+
+type ShellCommand =
+	| ShellSimpleCommand
+	| ShellPipeline
+	| ShellLogical
+	| ShellSubshell
+	| ShellBlock
+	| ShellIfClause
+	| ShellWhileClause
+	| ShellForClause
+	| ShellSelectClause
+	| ShellCaseClause
+	| ShellFunctionDecl
+	| ShellTimeClause
+	| ShellCoprocClause
+	| ShellCStyleLoop
+	| ShellTerminalCommand;
+
+interface ShellStatement {
+	command: ShellCommand;
+}
+
+interface ShellProgram {
+	body: ShellStatement[];
+}
+
+interface ShellParserModule {
+	parse: (input: string) => { ast: ShellProgram };
+}
 
 const QUOTED_OR_BARE_TOKEN_PATTERN =
 	/"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|`(?:\\.|[^`])*`|[^\s]+/g;
 const REDIRECT_TOKEN_PATTERN = /^(\d*>>?\|?|\d*<<?-?|&?>|<?&?|<>)(.*)$/;
 
-type ShellAstParserModule = typeof import("@aliou/sh");
+let shellAstParserModule: ShellParserModule | undefined;
+let shellAstParserModulePromise: Promise<ShellParserModule> | undefined;
 
-let shellAstParserModule: ShellAstParserModule | undefined;
-let shellAstParserModulePromise: Promise<ShellAstParserModule> | undefined;
-
-async function loadShellAstParserModule(): Promise<ShellAstParserModule> {
+async function loadShellAstParserModule(): Promise<ShellParserModule> {
 	if (shellAstParserModule) {
 		return shellAstParserModule;
 	}
 
-	shellAstParserModulePromise ??= import("@aliou/sh").then((module) => {
-		shellAstParserModule = module;
-		return module;
-	});
+	shellAstParserModulePromise ??= import("@aliou/sh").then(
+		(module): ShellParserModule => {
+			const typed = module as unknown as ShellParserModule;
+			shellAstParserModule = typed;
+			return typed;
+		},
+	);
 	return shellAstParserModulePromise;
 }
 
-function partToString(part: WordPart): string {
+function partToString(part: ShellWordPart): string {
 	switch (part.type) {
 		case "Literal":
 			return part.value;
@@ -57,13 +231,13 @@ function partToString(part: WordPart): string {
 	return "";
 }
 
-function wordToString(word: Word): string {
+function wordToString(word: ShellWord): string {
 	return word.parts.map(partToString).join("");
 }
 
 function walkCommands(
-	node: Program,
-	callback: (cmd: SimpleCommand) => boolean | undefined,
+	node: ShellProgram,
+	callback: (cmd: ShellSimpleCommand) => boolean | undefined,
 ): void {
 	for (const statement of node.body) {
 		if (walkStatement(statement, callback)) {
@@ -73,15 +247,15 @@ function walkCommands(
 }
 
 function walkStatement(
-	statement: Statement,
-	callback: (cmd: SimpleCommand) => boolean | undefined,
+	statement: ShellStatement,
+	callback: (cmd: ShellSimpleCommand) => boolean | undefined,
 ): boolean {
 	return walkCommand(statement.command, callback);
 }
 
 function walkStatements(
-	statements: Statement[],
-	callback: (cmd: SimpleCommand) => boolean | undefined,
+	statements: ShellStatement[],
+	callback: (cmd: ShellSimpleCommand) => boolean | undefined,
 ): boolean {
 	for (const statement of statements) {
 		if (walkStatement(statement, callback)) {
@@ -93,8 +267,8 @@ function walkStatements(
 }
 
 function walkCommand(
-	command: Command,
-	callback: (cmd: SimpleCommand) => boolean | undefined,
+	command: ShellCommand,
+	callback: (cmd: ShellSimpleCommand) => boolean | undefined,
 ): boolean {
 	switch (command.type) {
 		case "SimpleCommand":
@@ -230,6 +404,10 @@ function parseTokenSegment(segment: string): ParsedShellCommand {
 	};
 }
 
+function parseTokenCommands(command: string): ParsedShellCommand[] {
+	return splitRawSegments(command).map(parseTokenSegment);
+}
+
 async function parseAstCommand(command: string): Promise<ParsedShellCommand[]> {
 	const parsedCommands: ParsedShellCommand[] = [];
 	const { parse } = await loadShellAstParserModule();
@@ -237,11 +415,10 @@ async function parseAstCommand(command: string): Promise<ParsedShellCommand[]> {
 
 	walkCommands(ast, (simpleCommand) => {
 		const words = (simpleCommand.words ?? []).map(wordToString);
-		const redirects = (simpleCommand.redirects ?? []).map((redirect: unknown) => {
-			const redirectRecord = redirect as { op?: string; target: Word };
+		const redirects = (simpleCommand.redirects ?? []).map((redirect) => {
 			return {
-				operator: redirectRecord.op,
-				target: wordToString(redirectRecord.target),
+				operator: redirect.op,
+				target: wordToString(redirect.target),
 			};
 		});
 
@@ -267,9 +444,10 @@ export async function parseShellCommand(command: string): Promise<ParsedShellCom
 		if (parsedCommands.length > 0) {
 			return parsedCommands;
 		}
-	} catch {
-		// Fall through to token parsing for shells or syntaxes unsupported by @aliou/sh.
+	} catch (error) {
+		// @aliou/sh cannot parse this shell syntax; fall back to token parsing.
+		return parseTokenCommands(command);
 	}
 
-	return splitRawSegments(command).map(parseTokenSegment);
+	return parseTokenCommands(command);
 }
