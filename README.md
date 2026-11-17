@@ -63,6 +63,22 @@ Typical protected flows include:
 - shell commands that read, copy, move, write, delete, commit, or push protected secret-bearing files;
 - optional protected reads with redacted output when `readRedaction.enabled` is set to `true`.
 
+### Shell variables and search arguments
+
+The guard allows `$PWD` and `${PWD}`, which contain the shell working directory. Password variables such as `$pwd` and `$PASSWORD` still trigger secret-variable checks. Password fields still use the existing redaction rules.
+
+For `rg` and `grep`, the guard separates search text from file arguments. Search text such as `secret` does not count as a file read. Known text options, such as `--glob` and `--exclude`, do not count as file reads either.
+
+The guard still checks explicit file arguments and file-valued options:
+
+- `-f` and `--file` read search patterns from a file.
+- `rg --ignore-file` reads ignore patterns from a file.
+- `grep --exclude-from` reads exclusion patterns from a file.
+
+These checks include attached values, such as `-f.env` and `--file=.env`. The guard also checks file arguments after `--` and input redirects. Unknown options retain conservative path checks and can still cause false positives (blocks on safe commands).
+
+This parsing does not inspect every file below a directory argument. It does not resolve every path computed by the shell.
+
 ### `/sensitive-guard` command
 
 Use `/sensitive-guard` inside Pi to open the interactive configuration menu. The menu can toggle the guard, read redaction, shell-output redaction, blocked-event logging, debug logging, content scanning, protected-file safe edits, and redaction limits without editing JSON by hand.

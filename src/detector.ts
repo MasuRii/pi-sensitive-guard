@@ -351,7 +351,99 @@ function getCandidateWords(
 	return operands.length > 1 ? selectOperands(operands) : operands;
 }
 
+function getSearchReadCandidateWords(commandName: string, words: string[]): string[] {
+	const isRipgrep = commandName === "rg";
+	const textOptions = new Set([
+		"--regexp", "--after-context", "--before-context", "--context", "--max-count",
+		...(isRipgrep
+			? ["--glob", "--iglob", "--pre-glob", "--encoding", "--engine", "--threads",
+				"--max-depth", "--max-filesize", "--type", "--type-not", "--type-add",
+				"--type-clear", "--color", "--colors", "--context-separator",
+				"--field-context-separator", "--field-match-separator", "--hyperlink-format",
+				"--max-columns", "--path-separator", "--replace", "--sort", "--sortr",
+				"--dfa-size-limit", "--regex-size-limit"]
+			: ["--include", "--exclude", "--exclude-dir", "--label", "--binary-files",
+				"--directories", "--devices", "--group-separator"]),
+	]);
+	const fileOptions = new Set([
+		"--file", isRipgrep ? "--ignore-file" : "--exclude-from",
+	]);
+	const flagOptions = new Set([
+		"--fixed-strings", "--ignore-case", "--line-number", "--invert-match",
+		"--word-regexp", "--line-regexp", "--text", "--only-matching", "--quiet",
+		"--with-filename", "--no-filename", "--files-with-matches", "--files-without-match",
+		"--count", "--null", "--null-data", "--line-buffered", "--help", "--version",
+		...(isRipgrep
+			? ["--files", "--hidden", "--no-ignore", "--no-ignore-vcs", "--follow",
+				"--smart-case", "--case-sensitive", "--multiline", "--multiline-dotall",
+				"--pcre2", "--json", "--column", "--heading", "--no-heading", "--trim"]
+			: ["--recursive", "--dereference-recursive", "--extended-regexp", "--basic-regexp",
+				"--perl-regexp", "--no-ignore-case", "--no-messages", "--silent",
+				"--initial-tab", "--no-group-separator", "--binary", "--color", "--colour"]),
+	]);
+	const shortValueOptions = isRipgrep ? "efgEjmdtTABCMr" : "efmdDABC";
+	const shortFlags = isRipgrep ? "zsFivxUPSawL.unN0opqHIclhV" : "EFGPiwxzsvVbnHhoqaIrRLlcTZU";
+	const commandIndex = words.findIndex((word) => !word.includes("="));
+	const args = words.slice(commandIndex + 1);
+	const paths: string[] = [];
+	const operands: string[] = [];
+	let explicitPattern = false;
+	let filesOnly = false;
+	let optionsEnded = false;
+	let unknownOption = false;
+
+	for (let index = 0; index < args.length; index += 1) {
+		const word = args[index];
+		if (!optionsEnded && word === "--") {
+			optionsEnded = true;
+			continue;
+		}
+		if (optionsEnded || !word.startsWith("-") || word === "-") {
+			operands.push(word);
+			continue;
+		}
+
+		if (word.startsWith("--")) {
+			const equalsIndex = word.indexOf("=");
+			const option = equalsIndex < 0 ? word : word.slice(0, equalsIndex);
+			if (textOptions.has(option) || fileOptions.has(option)) {
+				const value = equalsIndex < 0 ? args[++index] : word.slice(equalsIndex + 1);
+				if (value !== undefined && fileOptions.has(option)) paths.push(value);
+				if (option === "--regexp" || option === "--file") explicitPattern = true;
+			} else if (flagOptions.has(option)) {
+				if (option === "--files") filesOnly = true;
+			} else {
+				unknownOption = true;
+			}
+			continue;
+		}
+
+		for (let offset = 1; offset < word.length; offset += 1) {
+			const option = word[offset];
+			if (shortValueOptions.includes(option)) {
+				const value = word.slice(offset + 1) || args[++index];
+				if (value !== undefined && option === "f") paths.push(value);
+				if (option === "e" || option === "f") explicitPattern = true;
+				break;
+			}
+			if (!shortFlags.includes(option) && !/\d/.test(option)) {
+				unknownOption = true;
+				break;
+			}
+		}
+	}
+
+	paths.push(...(explicitPattern || filesOnly || unknownOption ? operands : operands.slice(1)));
+	// These are file operands, including names beginning with a dash after `--`.
+	const candidates = paths.map((path) => path.startsWith("-") ? `./${path}` : path);
+	// Unknown options retain the old checks without losing recognized file values.
+	return unknownOption ? [...candidates, ...args] : candidates;
+}
+
 function getReadCandidateWords(commandName: string, words: string[]): string[] {
+	if (commandName === "rg" || commandName === "grep") {
+		return getSearchReadCandidateWords(commandName, words);
+	}
 	return getCandidateWords(commandName, words, (operands) => operands.slice(0, -1));
 }
 
@@ -363,7 +455,8 @@ function findSecretEnvVarNames(command: string, patterns: CompiledEnvKeyPattern[
 	const names = new Set<string>();
 	for (const match of command.matchAll(ENV_VAR_REFERENCE_PATTERN)) {
 		const name = match[1] ?? match[2] ?? "";
-		if (name && patterns.some((pattern) => pattern.test(name))) {
+		// PWD is the shell working directory, not the password abbreviation.
+		if (name && name !== "PWD" && patterns.some((pattern) => pattern.test(name))) {
 			names.add(name);
 		}
 	}
