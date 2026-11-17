@@ -52,3 +52,34 @@ test("does not block echo of non-secret environment variables", async () => {
 
 	assert.equal(result.blocked, false);
 });
+
+for (const command of [
+	'printf "%s\\n" "$PWD"',
+	'printf "%s\\n" "${PWD}"',
+	'repo=$PWD; printf "%s\\n" "$repo"',
+	'sh -c \'echo "$PWD"\'',
+]) {
+	test(`allows the standard working-directory variable: ${command}`, async () => {
+		const matcher = createSensitiveGuardMatcher(echoConfig());
+
+		assert.equal((await matcher.checkReadCommand(command)).blocked, false);
+	});
+}
+
+for (const name of ["pwd", "Pwd", "PASSWORD", "PASSWD", "OPENAI_API_KEY", "ACCESS_TOKEN"]) {
+	test(`still blocks the password or secret variable ${name}`, async () => {
+		const matcher = createSensitiveGuardMatcher(echoConfig());
+		const result = await matcher.checkReadCommand(`printf "%s" "$${name}"`);
+
+		assert.equal(result.blocked, true);
+		assert.equal(result.target, name);
+	});
+}
+
+test("PWD does not suppress another secret variable in the same command", async () => {
+	const matcher = createSensitiveGuardMatcher(echoConfig());
+	const result = await matcher.checkReadCommand('printf "%s %s" "$PWD" "$PASSWORD"');
+
+	assert.equal(result.blocked, true);
+	assert.equal(result.target, "PASSWORD");
+});
